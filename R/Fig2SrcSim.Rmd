@@ -1,0 +1,522 @@
+---
+title: "Fig2SrcSim"
+author: "Charles Burns"
+date: "2023-07-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggpubr)
+```
+
+## Moderate simulations
+
+We have simulated two 'extreme' cases, in the absence of any real data. First, the case of no true effects (there are counter-examples, e.g. take the largest univariate effect, this is replicable across multiple datasets.), and secondly in the case of relatively large effects being present, i.e. effects so large at the full sample (UKB 30,000) that they can be replicated with at least 10% of full sample size (n = 3,000).
+
+Now we want to run some more simulations, but taking the Figure 2 data as reference. Here, instead of resampling with replacement from a large sample, we draw effects from an expected distribution of effects, under the assumptions of an effect either being true or false. An important caveat here is that we assume an effect size as observed, although we should expect this to be inflated compared to real world effect sizes. On the other hand, we treat false positive effects as random effects, as they should be. 
+
+Simulated effects here are based on Source data released for Figure 2 in Marek, Tervo-Clemmens et al. where the sample size n = 900 matches the HCP dataset release.
+
+### Initialise
+
+```{r Initialise, include=FALSE}
+#### Input variables ####
+
+#The parameters below may be scaled to lower computation time.
+
+nSample <- 900; #sample size of our simulated data.
+binsize <- c(25,33,50, 70, 100,135, 200, 265, 375, 525, 725, 900); #resample size bins
+iter <- 100 #Number of iterations
+thr <- c(.05, .01, .001, .0001, .00001, .000001, 0.05/55278) #significance thresholds, ranging from .05 to 0.05/55278 = 9*10^-7
+mag <- c(0.5, 1, 2) #magnitudes of inflation; 50%, 100%, and 200% as in Marek et al. (2022) fig 3b.
+
+```
+
+### Visualising data
+
+First, we visualise the Figure 2 data, comparing each distribution to the expected null distribution after resampling with replacement at n = 900 from an original null distribution at n = 900 (HCP), n = 3,928 (ABCD), and n = 32,000 (UKB). This is included here as it may be unclear exactly what the source data is for this figure in Marek, Tervo-Clemmens et al. from their paper. This may be overly suggestive.
+
+
+```{r Fig2Src Threshold}
+Fig2Src <- read_csv('Fig2src.csv') %>% as.tibble() #Importing the data
+
+colnames(Fig2Src)<- c("HCP", "ABCD", "UKB")
+
+HCPpoly <- as.tibble(Fig2Src) %>% select(HCP) %>% ggplot(aes(x=HCP)) +
+  geom_freqpoly(binwidth = 0.0015, colour="blue") +
+   coord_cartesian(xlim = c(-0.2,0.2), ylim=c(0,1000))+
+    geom_vline(xintercept=0.1692)+
+  stat_function(fun = function(x) dnorm(x, mean =0, sd =  0.04716666) * 55278 * 0.0015) + #Parametric null distribution, scaled by number of correlations * binwidth
+  theme_classic()
+
+ABCDpoly <- as.tibble(Fig2Src) %>% select(ABCD) %>% ggplot(aes(x=ABCD)) +
+  geom_freqpoly(binwidth = 0.0015, colour="red") +
+   coord_cartesian(xlim = c(-0.2,0.2), ylim=c(0,1000))+
+    geom_vline(xintercept=0.1692)+
+  stat_function(fun = function(x) dnorm(x, mean =0, sd =  0.03691083) * 55278 * 0.0015, alpha=0.5) + #Parametric null distribution, scaled by number of correlations * binwidth
+  theme_classic()
+
+UKBpoly <- as.tibble(Fig2Src) %>% select(UKB) %>% ggplot(aes(x=UKB)) +
+  geom_freqpoly(binwidth = 0.0015, colour="orange") +
+   coord_cartesian(xlim = c(-0.2,0.2), ylim=c(0,1000))+
+  geom_vline(xintercept=0.1692)+
+  stat_function(fun = function(x) dnorm(x, mean =0, sd =  0.03379292) * 55278 * 0.0015, alpha=0.5) + #Parametric null distribution, scaled by number of correlations * binwidth
+  theme_classic()
+
+ggarrange(HCPpoly,ABCDpoly,UKBpoly, nrow=1)
+
+```
+
+
+### Data Generation function
+
+The following function will be used to generate data according to observed effect sizes at n = 900 across HCP, ABCD, and UKB.
+
+```{r Critical R calculation}
+
+
+#We probably want to do this properly here, but for now we can just trust https://www.standarddeviationcalculator.io/critical-value-calculator
+
+n<- 900
+
+primary_dist <- function(x){(1-x^2)^((n-4)/2)/beta(1/2,(n-2)/2)} #exact null-distribution of Pearson correlations on n points (sample size).
+
+primary_var_int <- function(x){x^2*((1-x^2)^((n-4)/2)/beta(1/2,(n-2)/2))}#variance given by the integral of (x^2-mean)*f(x), here the mean is 0.  
+
+var1 <- integrate(primary_var_int, -1,1)$value #variance of a continuous function, namely the probability distribution of Pearsons on n points.
+
+PDF <- function(x){dnorm(x, mean=0, sd=sqrt(var1))} 
+
+p <- 2*integrate(PDF, abs(0.1629), Inf)$value #estimated p-value; this is slightly large due to larger area under tails (Gaussians go to infinity).
+
+#Critical t 4.9469
+t <- 4.9469
+r <- t/sqrt(t^2+n-2)
+
+CritR<- 0.1629
+
+```
+
+```{r Data pval Calculation}
+#Fast calculation of p-values of source data.
+
+HCP <- list()
+ABCD <- list()
+UKB <- list()
+
+HCP$corrs<- as.numeric(Fig2Src$HCP)
+ABCD$corrs <- Fig2Src$ABCD
+UKB$corrs <- Fig2Src$UKB
+
+PearsonPval <- function(corrs){
+  df <- 900-2
+  studentised <- corrs*sqrt(df/(1-corrs^2)) #Studentised Pearson correlations, i.e. scaled to a t-distribution.
+  pvals <- sapply(studentised, function(x){2*min(pt(x, df), pt(x, df, lower.tail=FALSE))}) #calculating p-values based on t-distribution.
+  
+  return(pvals)
+}
+
+HCP$pvals <- PearsonPval(HCP$corrs)
+ABCD$pvals <- PearsonPval(ABCD$corrs)
+UKB$pvals <- PearsonPval(UKB$corrs)
+```
+
+
+```{r Data Generation Function}
+
+#We simplify data generation, ultimately wanting a large list with corrs and pvals. Corrs will be nEffects x nIterations x nBinsize
+
+#We approximate the distribution of p-values under the assumption that underlying data is bivariate normally distributed (this is not the case as connectivity is a non-gaussian measure, but the difference in distribution of brain-behaviour associations is negligible.) This holds in particular when samples are large (above 30).
+
+#That is, we may draw our Pearson distributions from a t-distribution and then transform to a pearson correlation.
+
+alpha <- 0.05/length(HCP$corrs) #This alpha is the true / random threshold. Here it is based on bonferroni correction.
+
+#Distributions. In order to generate random data from the parametric null-distribution of a Pearson correlation on n=900 points, we want to pass a uniform distribution through an inverse cumulative distribution function.
+
+generate_data <- function(HCP,alpha){
+
+nEffects <- length(HCP$corrs)
+
+#Initialise dataframes
+  out <-list()
+  corrs <-array(0, c(nEffects, iter, length(binsize)))
+  pvals <-array(0, c(nEffects, iter, length(binsize)))
+
+  idx <- which(HCP$pvals<alpha)  #Find those effects which are assumed non-random (i.e. don't pass BF correction), and their index.
+
+      for(b in 1:length(binsize)){
+        
+        n <- binsize[b] #Target number of subjects, for simulating sampling variability
+        
+        df <- n-2
+
+        ts <- c()
+        
+        for(i in 1:iter){
+          
+        ts <- rt(nEffects, n-2) #Start by sampling all randomly (so we treat false-positives as random effects).
+        
+        corrs[,i,b] <-  ts/sqrt(n-2+ts^2) #Inverse function from Pearson r to t statistic.
+        
+        corrs[idx,i,b] <- corrs[idx,i,b]+HCP$corrs[idx] #Substitute the non-random effects with presumed true effects and added sampling variability.
+        
+        pvals[,i,b] <-  sapply(corrs[,i,b]*sqrt(df/(1-corrs[,i,b]^2)) , function(x){2*min(pt(x, df), pt(x, df, lower.tail=FALSE))}) #calculating p-values
+
+      }
+      }
+  out$corrs <- corrs
+  out$pvals <- pvals
+  return(out)
+}
+
+HCPgen <- generate_data(HCP,alpha)
+ABCDgen <- generate_data(ABCD,alpha)
+UKBgen <- generate_data(UKB,alpha)
+
+```
+
+
+### Functions from rwr analysis.Rmd
+
+```{r Statistical Error Function, include=FALSE}
+#Here we are adapting Marek et al.'s 2022 'abcd_statistical_errors.m' file to R
+
+#INPUT VARIABLES#
+
+ogpvals <- HCP$pvals #original sample or population correlations we check against. We code with null sample data as an example.
+ogcorrs <- HCP$corrs
+rwrout <- HCPgen #input to the function will be the output of rwr.edgewise.corrs, this should be in correspondence with the data chosen above.
+thr <- c(.05, .01, .001, .0001, .00001, alpha) #significance thresholds, ranging from .05 to 10^-7
+mag <- c(0.5, 1, 2) #magnitudes of inflation; 50%, 100%, and 200% as in Marek et al. (2022) fig 3b.
+
+#Function definition#
+
+statErrors <- function(ogpvals, ogcorrs, rwrout, thr, alpha){#admittedly too many inputs, but 
+  #Initialise matrices
+  
+  type1<- array(0,c(dim(rwrout$corrs)[3],length(thr))) #nResampleSizeBins x nThresholds
+  type2 <- type1 #Same dimensions as type1
+  power <- type1 #Same dimensions as type1
+  typeS <- type1 #Same dimensions as type1
+  repli <- type1 #Same dimensions as type1
+  FDR <- type1 #Same dimensions as type1
+
+  for (a in 1:length(thr)){ #Looping over our thresholds
+    
+    sigidx<-c() #initialise our significant effect index
+    sigidx <- ogpvals < thr[a] #Find significant brain-behaviours in original sample according to a VARIABLE threshold.
+    
+    trueidx <- ogpvals < alpha #Those effects which by simulation are true effects, under the conservative bonferroni assumption.
+    
+    diridx <- c() #initialise our direction index
+    diridx <- ogcorrs > 0 #positive correlations are TRUE (1) and negative are FALSE (0)
+    
+   
+      for (b in 1:dim(rwrout$pvals)[3]){ #Looping over the resample size bins
+        
+type1[b,a] <- sum(rwrout$pvals[!trueidx, ,b]<thr[a])/(iter*sum(!trueidx)) #proportion of originially non-significant edges which are significant in the resample, averaged over all iterations.
+
+type2[b,a] <- sum(rwrout$pvals[trueidx,,b]>=thr[a])/(iter*sum(trueidx)) #proportion of originally significant edges which are non-significant in the resample, averaged over all iterations. Note this returns NaN when no edges pass the iteration threshold in the original sample.
+
+power[b,a] <- 1-type2[b,a] #power = 1-false negative rates
+
+typeS[b,a] <- (sum(rwrout$corrs[diridx,,b]<0)/(iter*sum(diridx)) + sum(rwrout$corrs[!diridx,,b]>0)/(iter*sum(!diridx)))/2 #Proportion of of correlations with opposite correlation sign in the resample versus original sample. (here we average over positive -> negative and negative -> positive, and across all iterations). These are unthresholded.
+
+FDR[b,a] <- sum(rwrout$pvals[!trueidx, ,b]<thr[a]) / sum(rwrout$pvals[, ,b]<thr[a]) #False Discovery Rate. Proportion of significant effects which are false (incorrect rejections of null). This is computed as (false and significant effects)/(significant effects)
+
+repli[b,a] <- sum(rwrout$pvals[sigidx,,b]<=thr[a])/(iter*sum(sigidx)) #Replication rates for a given threshold, given by the number of significant (not necessarily true) effects in the discovery sample which are significant (not necessarily true) in a given replication sample. Averaged over 100 replications and over all effects.
+  
+
+  
+## the next 'statistical errors' require more work: ##
+
+# We omit type M estimates as they require another loop and take a long time.
+
+#We compute replication rates (as in Marek et al. 2022 fig 3.e) seperately in the next chunk as these require iterative resampling again and are quite time consuming.
+
+      }
+
+  }
+  out<- list()
+  
+  out$type1 <- type1
+  out$type2 <- type2
+  out$power <- power
+  out$typeS <- typeS
+  out$FDR <- FDR
+  out$repli <- repli
+
+  return(out)
+  
+}
+```
+
+
+```{r Calculating Statistical Errors, include=FALSE}
+## Calculating statistical errors (SE) ##
+HCPgenSE <- statErrors(HCP$pvals, HCP$corrs, HCPgen, thr, alpha)
+ABCDgenSE <- statErrors(ABCD$pvals, ABCD$corrs, ABCDgen, thr, alpha)
+UKBgenSE <- statErrors(UKB$pvals, UKB$corrs, UKBgen, thr, alpha)
+
+```
+
+```{r Statistical error data visualisation functions, include = FALSE}
+ 
+#Input data will look like NullSampleSE. This is the output of our statErrors function, with the replication rate appended.
+
+#Colour palette
+blues <- RColorBrewer::brewer.pal(9, "Blues")[3:9]
+purples <- RColorBrewer::brewer.pal(5, "Purples")[3:5]
+
+### Defining functions ###
+type1_figure <- function(dataSE){
+
+ colnames(dataSE$type1) <- thr
+  
+  wrangle <- dataSE$type1 %>%
+    as.tibble() %>% #tibble for ggplot 
+    pivot_longer(cols= colnames(dataSE$type1), names_to = 'alpha', values_to='type1') %>% #allows grouping by significance thresholds
+    mutate(resize = rep(binsize[1:12], each=length(thr)), alpha=factor(alpha, levels=thr)) %>% #Add a column for resample size bins (our x-axis)
+    group_by(alpha) #group_by for distinct lines.
+  
+  out <- wrangle %>% ggplot() + 
+  geom_line(aes(x=resize, y=type1, colour=alpha) ) + 
+  theme_classic() + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10') + scale_fill_discrete(labels=thr) + 
+    labs(subtitle = 'False Positives (Type I)', y='Type I error rate', x='Resample size (log scale)', colour='\U003B1') +
+  scale_colour_manual(values=blues, labels=c(expression(paste(0.05))," "," "," ",expression(paste(10^{-6}))))+ 
+  guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="\U003B1 (threshold)"))+
+    theme(legend.position=c(0.17,0.35))
+
+  return(out)
+}
+
+type2_figure <- function(dataSE){
+
+ colnames(dataSE$type2) <- thr
+  
+  wrangle <- dataSE$type2 %>%
+    as.tibble() %>% #tibble for ggplot 
+    pivot_longer(cols= colnames(dataSE$type2), names_to = 'alpha', values_to='type2') %>% #allows grouping by significance thresholds
+    mutate(resize = rep(binsize[1:12], each=length(thr)), alpha=factor(alpha, levels=thr)) %>% #Add a column for resample size bins (our x-axis)
+    group_by(alpha) #group_by for distinct lines.
+  
+  out <- wrangle %>% ggplot() + 
+  geom_line(aes(x=resize, y=type2, colour=alpha) ) + 
+  theme_classic() + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10') + scale_fill_discrete(labels=thr) + 
+    labs(subtitle = 'False Negatives (Type II)', y='Type II error rate', x='Resample size (log scale)', colour='\U003B1') +
+  scale_colour_manual(values=blues, labels=c(expression(paste(0.05))," "," "," ",expression(paste(10^{-6}))))+ 
+  guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="\U003B1 (threshold)"))+
+    theme(legend.position=c(0.17,0.35))
+
+  return(out)
+}
+
+typeS_figure <- function(dataSE){
+
+  
+  wrangle <- dataSE$typeS[,1] %>%
+    as.tibble() %>% 
+    mutate(resize = rep(binsize[1:12]))
+  
+  out <- wrangle %>% ggplot() + 
+  geom_point(aes(x=resize, y=value)) +
+  geom_line(aes(x=resize, y=value) ) + 
+  theme_classic() + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10') + 
+    scale_fill_discrete(labels=thr) + 
+    labs(subtitle='Sign error (Type S; unthresholded)', y='Sign error rate', x='Resample size (log scale)', colour='\U003B1')
+
+  return(out)
+}
+
+typeM_figure <- function(dataSE){
+  
+  ## first we turn the nBins X nThr X nMag matrix into an (nBins*nMag) X nThr matrix:
+  longer<- rbind(dataSE$typeM[,,1],dataSE$typeM[,,2], dataSE$typeM[,,3])
+  colnames(longer) <- thr
+  
+  wrangle <- longer[,1:2] %>%
+    as.tibble() %>% #tibble for ggplot 
+    mutate(resize = rep(binsize[1:length(binsize)], length(mag)), magnitude = rep(as.factor(mag[1:3]), each=length(binsize))) %>%
+    pivot_longer(cols= colnames(longer[,1:2]), names_to = 'alpha', values_to='typeM') %>% #allows grouping by significance thresholds and magnitude of inflation
+    group_by(alpha, magnitude) #group_by for distinct lines.
+  
+  out <- wrangle %>% ggplot() + 
+  geom_point(aes(x=resize, y=typeM, colour=magnitude))+
+  geom_line(aes(x=resize, y=typeM, colour=magnitude, linetype=alpha) ) + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10') + scale_fill_discrete(labels=thr) + 
+    labs(subtitle = 'Inflation (Type M)', y='Inflated Correlation', x='Resample size (log scale)', colour='Magnitude of inflation', linetype = '\U003B1 (threshold)') +
+    scale_linetype_manual(values=c('dashed','solid'), labels=c('P < 0.01','P < 0.05'))+
+  scale_colour_manual(values=purples[1:3], labels=c('50%','100%', '200%'))+ 
+    theme_classic() + 
+    theme(legend.position=c(0.20,0.32), legend.key.height = unit(.20,'cm'), legend.text = element_text(size=6), legend.title = element_text(size=8))
+  
+  return(out)
+}
+
+repli_figure <- function(dataSE){
+
+ colnames(dataSE$repli) <- thr
+  
+  wrangle <- dataSE$repli %>%
+    as.tibble() %>% #tibble for ggplot 
+    pivot_longer(cols= colnames(dataSE$repli), names_to = 'alpha', values_to='repli') %>% #allows grouping by significance thresholds
+    mutate(resize = rep(binsize[1:12], each=length(thr)), alpha=factor(alpha, levels=thr)) %>% #Add a column for resample size bins (our x-axis)
+    group_by(alpha) #group_by for distinct lines.
+  
+  out <- wrangle %>% ggplot() + 
+  geom_line(aes(x=resize, y=repli, colour=alpha) ) + 
+  theme_classic() + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10', limits = c(25,1000)) + 
+    scale_fill_discrete(labels=thr) + 
+    labs(subtitle = 'Probability of replication', y='Successful replications', x='Resample size (log scale)', colour='\U003B1') +
+   scale_colour_manual(values=blues, labels=c(expression(paste(0.05))," "," "," ",expression(paste(10^{-6}))))+ 
+  guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="\U003B1 (threshold)"))+
+    theme(legend.position=c(0.17,0.35))
+
+  return(out)
+}
+
+
+
+power_figure <- function(dataSE){
+  
+  colnames(dataSE$power) <- thr
+  
+  wrangle <- dataSE$power %>%
+    as.tibble() %>% #tibble for ggplot 
+    pivot_longer(cols= colnames(dataSE$power), names_to = 'alpha', values_to='power') %>% #allows grouping by significance thresholds
+    mutate(resize = rep(binsize[1:12], each=length(thr)), alpha=factor(alpha, levels=thr)) %>% #Add a column for resample size bins (our x-axis)
+    group_by(alpha) #group_by for distinct lines.
+  
+  out <- wrangle %>% ggplot() + 
+  geom_line(aes(x=resize, y=power, colour=alpha) ) + 
+  theme_classic() + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10') + scale_fill_discrete(labels=thr) + labs(subtitle = 'Statistical Power (1-false negative rates)', y='Statistical Power', x='Resample size (log scale)', colour='\U003B1') +
+   scale_colour_manual(values=blues, labels=c(expression(paste(0.05))," "," "," ",expression(paste(10^{-6}))))+ 
+  guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="\U003B1 (threshold)"))+theme(legend.position=c(0.17,0.35))
+  return(out)
+}
+
+FDR_figure <- function(dataSE){
+  
+  colnames(dataSE$FDR) <- thr
+  
+  wrangle <- dataSE$FDR %>%
+    as.tibble() %>% #tibble for ggplot 
+    pivot_longer(cols= colnames(dataSE$FDR), names_to = 'alpha', values_to='FDR') %>% #allows grouping by significance thresholds
+    mutate(resize = rep(binsize[1:12], each=length(thr)), alpha=factor(alpha, levels=thr)) %>% #Add a column for resample size bins (our x-axis)
+    group_by(alpha) #group_by for distinct lines.
+  
+  out <- wrangle %>% ggplot() + 
+  geom_line(aes(x=resize, y=FDR, colour=alpha) ) + 
+  theme_classic() + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10') + scale_fill_discrete(labels=thr) + labs(subtitle = 'False Discovery Rate', y='False Discovery Rate', x='Resample size (log scale)', colour='\U003B1') +
+   scale_colour_manual(values=blues, labels=c(expression(paste(0.05))," "," "," ",expression(paste(10^{-6}))))+ 
+  guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="\U003B1 (threshold)"))+theme(legend.position=c(0.17,0.35))
+  return(out)
+}
+
+```
+
+```{r Sim Data Figures}
+HCPfig <- ggarrange(type1_figure(HCPgenSE), power_figure(HCPgenSE),
+FDR_figure(HCPgenSE), nrow=1,labels=c("a","b","c"))
+
+ggsave('figures/HCPFigure.png', 
+       (HCPfig),bg='transparent',  width = 40, height = 10, dpi = 900, units = "cm", device='png')
+
+ABCDfig <- ggarrange(type1_figure(ABCDgenSE), power_figure(ABCDgenSE),
+FDR_figure(ABCDgenSE), nrow=1,labels=c("a","b","c"))
+
+ggsave('figures/ABCDFigure.png', 
+       (ABCDfig),bg='transparent',  width = 40, height = 10, dpi = 900, units = "cm", device='png')
+
+UKBfig <- ggarrange(type1_figure(UKBgenSE), power_figure(UKBgenSE),
+FDR_figure(UKBgenSE), nrow=1,labels=c("a","b","c"))
+
+ggsave('figures/UKBFigure.png', 
+       (UKBfig),bg='transparent',  width = 40, height = 10, dpi = 900, units = "cm", device='png')
+
+
+Fig2Sim <- ggarrange(power_figure(HCPgenSE), 
+          FDR_figure(HCPgenSE),
+          repli_figure(HCPgenSE),
+          power_figure(ABCDgenSE), 
+          FDR_figure(ABCDgenSE), 
+          repli_figure(ABCDgenSE), labels=c("a","b","c","d","e","f"))
+
+ggsave('figures/Fig2Sim.png',
+ (Fig2Sim),bg='transparent',  width = 40, height = 20, dpi = 900, units = "cm", device='png')
+
+
+
+```
+
+
+```{r Analytic Power Curves}
+
+#We perform power calculations for the assumed true effect sizes under given sample sizes and significance thresholds.
+
+AnalyticPower <- function(data){
+  
+
+effects <- data$corrs[data$pvals<(0.05/55278)]
+
+binsize #same binsizes as before
+
+thr #same thresholds as before
+
+p <- array(0, dim=c(length(thr),length(binsize),length(effects)))
+
+for(e in 1:length(effects)){
+  z <- atanh(abs(effects[e])) #fisher transformation of effect size.
+  for(a in 1:length(thr)){
+    Za <- qnorm(1-thr[a]/2) #Critical Z score for a given threshold
+      for(b in 1:length(binsize)){
+        n <- binsize[b]
+        Zb <- sqrt(n-3)*z-Za      
+        p[a,b,e] <- pnorm(Zb)
+        }
+  }
+}
+
+
+analytic <-list()
+analytic$power <- array(0, dim=c(length(binsize),length(thr)))
+
+for(b in 1:length(binsize)){
+  for(a in 1:length(thr)){
+    analytic$power[b,a] <- mean(p[a,b,])
+  }
+}
+
+return(analytic$power)
+
+}
+
+HCPanalytic <- list()
+
+ABCDanalytic <- list()
+
+HCPanalytic$power <- AnalyticPower(HCP)
+ABCDanalytic$power <- AnalyticPower(ABCD)
+
+power_figure(HCPanalytic) + labs(subtitle=c("HCP bonferroni analytic power curves"))
+
+power_figure(ABCDanalytic) + labs(subtitle=c("ABCD bonferroni analytic power curves"))
+```
+
+
