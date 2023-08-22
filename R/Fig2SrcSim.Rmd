@@ -55,14 +55,14 @@ ABCDpoly <- as.tibble(Fig2Src) %>% select(ABCD) %>% ggplot(aes(x=ABCD)) +
   geom_freqpoly(binwidth = 0.0015, colour="red") +
    coord_cartesian(xlim = c(-0.2,0.2), ylim=c(0,1000))+
     geom_vline(xintercept=0.1692)+
-  stat_function(fun = function(x) dnorm(x, mean =0, sd =  0.03691083) * 55278 * 0.0015, alpha=0.5) + #Parametric null distribution, scaled by number of correlations * binwidth
+  stat_function(fun = function(x) dnorm(x, mean =0, sd =  0.03691083) * 55278 * 0.0015) + #Parametric null distribution, scaled by number of correlations * binwidth
   theme_classic()
 
 UKBpoly <- as.tibble(Fig2Src) %>% select(UKB) %>% ggplot(aes(x=UKB)) +
   geom_freqpoly(binwidth = 0.0015, colour="orange") +
    coord_cartesian(xlim = c(-0.2,0.2), ylim=c(0,1000))+
   geom_vline(xintercept=0.1692)+
-  stat_function(fun = function(x) dnorm(x, mean =0, sd =  0.03379292) * 55278 * 0.0015, alpha=0.5) + #Parametric null distribution, scaled by number of correlations * binwidth
+  stat_function(fun = function(x) dnorm(x, mean =0, sd =  0.03379292) * 55278 * 0.0015) + #Parametric null distribution, scaled by number of correlations * binwidth
   theme_classic()
 
 ggarrange(HCPpoly,ABCDpoly,UKBpoly, nrow=1)
