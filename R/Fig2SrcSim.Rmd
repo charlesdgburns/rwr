@@ -260,8 +260,8 @@ repli[b,a] <- sum(rwrout$pvals[sigidx,,b]<=thr[a])/(iter*sum(sigidx)) #Replicati
 HCPgenSE <- statErrors(HCP$pvals, HCP$corrs, HCPgen, thr, alpha)
 ABCDgenSE <- statErrors(ABCD$pvals, ABCD$corrs, ABCDgen, thr, alpha)
 UKBgenSE <- statErrors(UKB$pvals, UKB$corrs, UKBgen, thr, alpha)
-
 ```
+
 
 ```{r Statistical error data visualisation functions, include = FALSE}
  
@@ -438,14 +438,14 @@ FDR_figure(HCPgenSE), nrow=1,labels=c("a","b","c"))
 ggsave('figures/HCPFigure.png', 
        (HCPfig),bg='transparent',  width = 40, height = 10, dpi = 900, units = "cm", device='png')
 
-ABCDfig <- ggarrange(type1_figure(ABCDgenSE), power_figure(ABCDgenSE),
-FDR_figure(ABCDgenSE), nrow=1,labels=c("a","b","c"))
+ABCDfig <- ggarrange( power_figure(ABCDgenSE),
+FDR_figure(ABCDgenSE), repli_figure(ABCDgenSE), nrow=1,labels=c("a","b","c"))
 
 ggsave('figures/ABCDFigure.png', 
        (ABCDfig),bg='transparent',  width = 40, height = 10, dpi = 900, units = "cm", device='png')
 
-UKBfig <- ggarrange(type1_figure(UKBgenSE), power_figure(UKBgenSE),
-FDR_figure(UKBgenSE), nrow=1,labels=c("a","b","c"))
+UKBfig <- ggarrange(power_figure(UKBgenSE),
+FDR_figure(UKBgenSE), repli_figure(UKBgenSE), nrow=1,labels=c("a","b","c"))
 
 ggsave('figures/UKBFigure.png', 
        (UKBfig),bg='transparent',  width = 40, height = 10, dpi = 900, units = "cm", device='png')

@@ -1179,7 +1179,7 @@ resample. \label{Fig1}](figures/SupFig1.png)
 cs1_scatter <- CopulaSample1 %>% as.tibble() %>% select(factor, e1) %>%
   ggplot( aes(y=factor, x=e1)) +
   geom_point(colour=4, alpha=0.3) +
-  geom_smooth(method=lm, colour="gray", se=FALSE)+
+  geom_smooth(method=lm, colour="black", se=FALSE)+
   labs(title="Copula Sample (\U03C1 = 0.2), N=1,000", x="Edge 1 connectivity", y="Behavioural factor")+
   stat_cor(method="pearson")+
   xlim(-1,1)+
@@ -1213,7 +1213,7 @@ ggsave('figures/SupFig2.png',
 cs2_scatter <- CopulaSample2 %>% as.tibble() %>% select(factor, e1) %>%
   ggplot( aes(y=factor, x=e1)) +
   geom_point(colour=4, alpha=0.3) +
-  geom_smooth(method=lm, colour="gray", se=FALSE)+
+  geom_smooth(method=lm, colour="black", se=FALSE)+
   labs(title="Copula Sample (\U03C1 = 0.4), N=1,000", x="Edge 1 connectivity", y="Behavioural factor")+
   stat_cor(method="pearson")+
   xlim(-1,1)+

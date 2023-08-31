@@ -5,10 +5,13 @@ date: "2023-08-18"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
 library(tidyverse)
 library(ggpubr)
+
+set.seed(2022) #Setting the seed to the year for reproducibility.
+knitr::opts_chunk$set(cache = TRUE) #Making the seed global so it applies to all chunks.
 ```
 
 ## Fast simulation
@@ -33,8 +36,8 @@ As a final figure for these simulations, we want a graph for each statistical er
 
 nDiscovery <- 1000; #sample size of our simulated data.
 binsize <- c(25,33,50, 70, 100,135, 200, 265, 375, 525, 725, 1000); #resample size bins
-iter <- 100 #Number of iterations
-nEffects <- 55278
+iter <- 1000 #Number of iterations
+nEffects <- 1225 #100 choose 2; more effects leads to smoother bias estimations
 thr <- 0.05/nEffects #significance threshold, fixed here as power varies
 power <- c(0.01,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,0.99)
 
@@ -45,7 +48,7 @@ We find critical effect sizes for a discovery sample of n = 1000, at a bonferron
 ```{r Analytic Power Calculations}
 #First, we want to find the critical effect sizes for different levels of statistical power at the full sample size. 
 
-rCrit <- c()
+rCrit <- c() #Initiating vector
 
 for(p in 1:length(power)){
   Zb <- qnorm(power[p]) #Critical Z score for a given power
@@ -60,11 +63,12 @@ The above effect sizes will be used to simulate true effects of a given power le
 
 Note that while real world effect sizes of a single BWAS may vary, we instead simulate several effects with the same underlying effect size. This should not be an issue, since the statistical error summary statistics are given as an average across effects, so in this simulation we can think of the underlying effects having an average effect size according to a given power level.
 
-Below, we generate a discovery sample such that 1% of the effects are true effects, with their effect size scaled according to power levels. E.g. with 1225 effects, 12 of them are true effects. The number of true effects here is a somewhat arbitrary decision.
+Below, we generate a discovery sample such that 50 of the effects are true effects, with their effect size scaled according to power levels. The number of true effects here is a somewhat arbitrary decision, although having more true effects will give a less noisy estimate of bias.
 
 ```{r Discovery Sample Generation}
 
-nTrue <- round(nEffects/100)
+nTrue <- 50 #round(nEffects/100); code here for 1% true effects, although only 12 effects lead to noise bias estimates.
+
 nFalse <- nEffects - nTrue
 
 Discovery <- list()
@@ -92,11 +96,34 @@ for(p in 1:length(power)){
 
 ```
 
+For the sake of clarity, let's visualise these discovery samples. Note that our tricky task is to reliably estimate statistical errors while only having a single discovery sample. 
+
+```{r Visualising discovery samples}
+
+Samples <- Discovery$corrs
+
+colnames(Samples) <- power
+
+Tibble <- Samples %>% as_tibble() %>% mutate(idx = row_number(), real = case_when(idx <= nTrue ~ 1, idx >nTrue ~ 0) ) %>% pivot_longer(cols=colnames(Samples), names_to = "power", values_to= "r")  %>% group_by(power, real) %>% arrange(real)
+
+
+DiscoveryPlot <- Tibble %>% ggplot(aes(x=power, y=r, colour=real))+ geom_jitter(shape=3, alpha=0.5, show.legend = FALSE) + 
+  scale_colour_gradient(low="gray", high='red') + 
+  scale_alpha_continuous(range= c(0.1,1))+ 
+  geom_hline(yintercept=tanh((qnorm(1-thr/2)/sqrt(nDiscovery-3))), linetype="dashed")+ 
+  scale_shape_binned(solid=FALSE) + 
+  labs(y= "Observed Effect Size (Pearson r)", x="Statistical Power (Ground truth)", subtitle=paste("Discovery Samples (",nEffects, " effects at N = ",nDiscovery,")", sep="")) +
+  theme_classic()
+
+DiscoveryPlot
+```
+In the figure above, red crosses are true effects while grey crosses are random; notice for 1% power these are practically indistinguishable from random effects. The dashed line represents the critical r for significance at Bonferroni correction level.
+
 Now we have our discovery samples, we can simulate the resampling process of Marek et al. in order to compute statistical errors.
 
 
 ```{r Fast Resampling Simulator}
-#Instead of resampling participants (as we skip simulating them here), we simulate data as if it had been resampled. Importantly, we use the fact that a resample adds sampling variability to the observed effect sizes in the discovery sample (full sample size).
+#Instead of resampling participants (as we skip simulating them here), we simulate data as if it had been resampled. Importantly, we use the fact that a resample adds sampling variability to the observed effect sizes in the discovery sample (full sample size). Essentially, this treats observed effect sizes as true effects.
 
 #Distributions. In order to generate random data from the parametric null-distribution of a Pearson correlation on n=900 points, we want to pass a uniform distribution through an inverse cumulative distribution function.
 
@@ -119,9 +146,9 @@ Resample <- list()
           
         ts <- rt(nEffects, n-2) #Start by sampling all randomly (so we treat false-positives as random effects).
         
-        corrs[,i,b,p] <-  ts/sqrt(n-2+ts^2) #Inverse function from Pearson r to t statistic.
+        corrs[,i,b,p] <-  ts/sqrt(n-2+ts^2) #Transform from t statistic to Pearson r.
         
-        corrs[,i,b,p] <- corrs[,i,b,p]+Discovery$corrs[,p] #Add the discovery sample effects, as if resampled
+        corrs[,i,b,p] <- corrs[,i,b,p]+Discovery$corrs[,p] #Add the discovery sample effects, as if resampled and varying around observed statistic. Cautionary note: this works only for correlations close to 0 and large sample sizes, as otherwise we might (although rarely) observe correlations exceeding -1 or 1. To avoid this one could sample from the exact distribution of Pearson correlations.
         
         pvals[,i,b,p] <-  sapply(corrs[,i,b,p]*sqrt(df/(1-corrs[,i,b,p]^2)) , function(x){2*min(pt(x, df), pt(x, df, lower.tail=FALSE))}) #calculating p-values
 
@@ -136,7 +163,7 @@ Resample$pvals <- pvals
 
 Now we can compute the bias in statistical power. We first estimate power as in Marek et al., averaging over the 100 iterations, and then compare this to expected power.
 
-```{r}
+```{r Estimated Power}
 
 #initialise
 estimatedPower <- array(0, dim=c(length(binsize),length(power))) 
@@ -169,19 +196,23 @@ wrangle <- estimatedPower %>%
 palette <- RColorBrewer::brewer.pal(11, "RdYlBu")
 
 
-  out <- wrangle %>% ggplot() + 
+  PowerFigure <- wrangle %>% ggplot() + 
   geom_line(aes(x=resize, y=estimated, colour=expected) ) + 
-  theme_classic() + 
+  theme_minimal() + 
   scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
-  scale_x_continuous(breaks=binsize, trans='log10') + scale_fill_discrete(labels=thr) + labs(subtitle = 'Estimated Power (1-false negative rates)', y='Statistical Power', x='Sample Size', colour='\U003B1') +
-   scale_colour_manual(values=palette, labels=c("0.01"," "," "," "," "," "," "," "," ","0.99"))+ 
-  guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="Discovery Power"))+theme(legend.position=c(0.17,0.35))
+  scale_x_continuous(breaks=binsize, trans='log10') + 
+    scale_fill_discrete(labels=thr) + 
+    labs(subtitle='Estimate (Marek, Tervo-Clemmens et al.)',y='Statistical Power', x='Sample Size', colour='\U003B1') +
+    scale_colour_manual(values=palette, labels=c("0.01"," "," "," "," "," "," "," "," ","0.99"))+ 
+    guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="Discovery Power"))+
+    theme(legend.position=c(0.2,0.35))
   
-  out
+  PowerFigure
 ```
 
+While the above figure is useful for a reference
 
-```{r Analytic Power Curves}
+```{r Bias figure}
 
 #We perform power calculations for the true effect sizes across sample size (all bonferonni corrected)
 
@@ -214,13 +245,28 @@ analyticWrangle <- analyticWrangle %>%
 palette <- RColorBrewer::brewer.pal(11, "RdYlBu")
 
 
-  BiasFigure <- analyticWrangle %>% ggplot() + 
-  geom_line(aes(x=resize, y=estimated, colour=expected) ) + 
-  theme_classic() + 
-  scale_x_continuous(breaks=binsize, trans='log10') + scale_fill_discrete(labels=thr) + labs(subtitle = 'Bias (estimated - expected)', y='Statistical Power', x='Sample Size', colour='\U003B1') +
-   scale_colour_manual(values=palette, labels=c("0.01"," "," "," "," "," "," "," "," ","0.99"))+ 
-  guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="Discovery Power"))+theme(legend.position=c(0.17,0.35))
+  BiasFigure <- analyticWrangle %>% 
+    ggplot() + 
+      geom_line(aes(x=resize, y=estimated, colour=expected) ) + 
+      theme_minimal() + 
+      scale_y_continuous(limits=c(-0.1,0.7), n.breaks=8)+
+      scale_x_continuous(breaks=binsize, trans='log10') +
+      scale_fill_discrete(labels=thr) + labs(subtitle='Bias (estimated - expected)', y='Statistical Power', x='Sample Size', colour='\U003B1') +
+    scale_colour_manual(values=palette, labels=c("0.01"," "," "," "," "," "," "," "," ","0.99"))+ 
+    guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="Discovery Power"))+
+      theme(legend.position=c(0.2,0.35))
   
- BiasFigure
+BiasFigure
+```
+
+
+```{r Figure}
+
+Figure3 <- ggarrange(DiscoveryPlot, PowerFigure, BiasFigure,nrow = 1, labels=c("a","b","c"))
+
+ggsave('figures/Figure3.png',
+ (Figure3),bg='transparent',  width = 32, height = 8, dpi = 900, units = "cm", device='png')
+
+
 ```
 
