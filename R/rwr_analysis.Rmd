@@ -1,7 +1,7 @@
 ---
 title: "Addressing biased statistical error estimates obtained when resampling with replacement."
 author: "Charles D.G Burns"
-date: '09-01-2023'
+date: '04-09-2023'
 output:
   html_document: default
   pdf_document: default
@@ -31,13 +31,13 @@ library(tidyverse) #for ggplot and other data wrangling packages. Must mask MASS
 if(dir.exists('figures')==FALSE) dir.create('figures') #creates folder for figures in working directory, if missing.
 
 
-set.seed(2022) #Setting the seed to the year for reproducibility.
+set.seed(2022) #Setting the seed to the Marek et al. year for reproducibility.
 knitr::opts_chunk$set(cache = T) #Making the seed global so it applies to all chunks.
 ```
 
 ## Main body Figures
 
-### Statistical error estimates are biased
+### Statistical error estimates are biased under the null
 
 ```{r Null-sample, include=FALSE}
 #### Input variables ####

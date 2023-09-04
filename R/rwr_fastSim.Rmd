@@ -1,7 +1,7 @@
 ---
 title: "rwr_FastSim"
 author: "Charles David Gutierrez Burns"
-date: "2023-08-18"
+date: "04-09-2023"
 output: html_document
 ---
 
@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
 library(tidyverse)
 library(ggpubr)
 
-set.seed(2022) #Setting the seed to the year for reproducibility.
+set.seed(2022) #Setting the seed to the Marek et al. year for reproducibility.
 knitr::opts_chunk$set(cache = TRUE) #Making the seed global so it applies to all chunks.
 ```
 
@@ -23,7 +23,7 @@ There we show strong bias in results when there is no effect, calling for furthe
 This allows us to comprehensively answer 'when and how much' bias arises when resampling with replacement under various true effects.
 
 The 'slow' simulations indicated clearly that uncorrected estimates are generally biased. 
-This should not be surprising, as low statistical thresholds will include many false positives when not controlling for multiple comparisons. Furthermore, the 'slow' simulations also indicated that bias of resampling at the full sample size will depend on statistical power of the effect at the full sample size. For this reason, in the next analysis we fix the statistical threshold at bonferroni corrected levels and vary statistical power.
+This should not be surprising, as low statistical thresholds will include many false positives when not controlling for multiple comparisons. Furthermore, the 'slow' simulations also indicated that bias of resampling at the full sample size will depend on statistical power of the effect at the full sample size. For this reason, in the next analysis we fix the statistical threshold at Bonferroni corrected levels and vary statistical power.
 
 We therefore aim to investigate a broad range of effect sizes, based on an inverse power calculation for a full sample size of n = 1,000 (as with our slow simulations).
 
@@ -79,21 +79,19 @@ Discovery$pvals <- array(0, dim=c(nEffects,length(power))) #generate a list of p
 
 for(p in 1:length(power)){
 
-        df <- nDiscovery-2
-
-        ts <- c() #temporary hold some sampled t statistics
+        zs <- c() #temporary hold some sampled z statistics
           
-        ts <- rt(nEffects, df) #Start by sampling all randomly.
+        zs <- rnorm(nEffects, 0, 1/sqrt(nDiscovery-3)) #Start by sampling all randomly.
         
-        Discovery$corrs[,p] <-  ts/sqrt(df+ts^2) #Inverse function from Pearson r to t statistic.
+        Discovery$corrs[,p] <-tanh(zs) #Fisher transformation from z to r for random effects.
         
-        Discovery$corrs[1:nTrue,p] <- Discovery$corrs[1:nTrue,p]+rCrit[p] #True effects simulated by adding sampling variability (random effect size) to the true effect size.
+        Discovery$corrs[1:nTrue,p] <- tanh(rnorm(nTrue, mean=atanh(rCrit[p]), 1/sqrt(nDiscovery-3))) #True effects simulated by fisher transformation, with mean atanh(rho) and sd 1/sqrt(n-3). These z scores are then transformed again into pearson correlations by tanh.
         
-        Discovery$pvals[,p] <-  sapply(Discovery$corrs[,p]*sqrt(df/(1-Discovery$corrs[,p]^2)) , function(x){2*min(pt(x, df), pt(x, df, lower.tail=FALSE))}) #calculating p-values
+        df <- n-2
+        
+        Discovery$pvals[,p] <-  sapply(Discovery$corrs[,p]*sqrt(df/(1-Discovery$corrs[,p]^2)) , function(x){2*min(pt(x, df), pt(x, df, lower.tail=FALSE))}) #calculating p-values using 'fast' t distribution.
 
 }
-
-
 ```
 
 For the sake of clarity, let's visualise these discovery samples. Note that our tricky task is to reliably estimate statistical errors while only having a single discovery sample. 
@@ -136,21 +134,20 @@ Resample <- list()
   for(p in 1:length(power)){
       for(b in 1:length(binsize)){
         
-        n <- binsize[b] #Target number of subjects, for simulating sampling variability
+        n <- binsize[b] #Target number of subjects, for simulating sampling variabilities
         
-        df <- n-2
-
-        ts <- c() #temporary list for sampled t statistics
+        df <- n-2 #degrees of freedom used for calculating p-values
+        
+        zs <- c() #temporary list for sampled z statistics
         
         for(i in 1:iter){
           
-        ts <- rt(nEffects, n-2) #Start by sampling all randomly (so we treat false-positives as random effects).
+        zs <- rnorm(nEffects, mean=atanh(Discovery$corrs[,p]), 1/sqrt(n-3)) #True effects simulated by fisher transformation, with mean being the observed p-value in the discovery and standard deviation 1/sqrt(n-3).
+
         
-        corrs[,i,b,p] <-  ts/sqrt(n-2+ts^2) #Transform from t statistic to Pearson r.
+        corrs[,i,b,p] <- tanh(zs) #z scores are then transformed again into pearson correlations by tanh.
         
-        corrs[,i,b,p] <- corrs[,i,b,p]+Discovery$corrs[,p] #Add the discovery sample effects, as if resampled and varying around observed statistic. Cautionary note: this works only for correlations close to 0 and large sample sizes, as otherwise we might (although rarely) observe correlations exceeding -1 or 1. To avoid this one could sample from the exact distribution of Pearson correlations.
-        
-        pvals[,i,b,p] <-  sapply(corrs[,i,b,p]*sqrt(df/(1-corrs[,i,b,p]^2)) , function(x){2*min(pt(x, df), pt(x, df, lower.tail=FALSE))}) #calculating p-values
+        pvals[,i,b,p] <-  sapply(corrs[,i,b,p]*sqrt(df/(1-corrs[,i,b,p]^2)) , function(x){2*min(pt(x, df), pt(x, df, lower.tail=FALSE))}) #calculating p-values using a 'fast' t-distribution method.
 
       }
   }
@@ -161,7 +158,7 @@ Resample$pvals <- pvals
 
 ```
 
-Now we can compute the bias in statistical power. We first estimate power as in Marek et al., averaging over the 100 iterations, and then compare this to expected power.
+Now we can compute the bias in statistical power. We first estimate power as in Marek et al., averaging over the 1000 iterations, and then compare this to expected power.
 
 ```{r Estimated Power}
 
@@ -232,8 +229,6 @@ colnames(analyticPower) <- power
 
 analyticWrangle <- estimatedPower - analyticPower %>%
     as.tibble() 
-
-analyticWrangle[,1] <- array(NaN,12)
 
 analyticWrangle <- analyticWrangle %>%
 #tibble for ggplot 
