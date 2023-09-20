@@ -1,5 +1,5 @@
 ---
-title: "rwr_FastSim"
+title: "rwr_fastSim"
 author: "Charles David Gutierrez Burns"
 date: "04-09-2023"
 output: html_document
@@ -32,13 +32,13 @@ As a final figure for these simulations, we want a graph for each statistical er
 ```{r initial parameters}
 #### Input variables ####
 
-#The parameters below may be scaled to lower computation time.
+#The parameters below may be scaled to lower computation time. Note, current code requires at least 16GB RAM. 
 
 nDiscovery <- 1000; #sample size of our simulated data.
 binsize <- c(25,33,50, 70, 100,135, 200, 265, 375, 525, 725, 1000); #resample size bins
-iter <- 1000 #Number of iterations
-nEffects <- 1225 #100 choose 2; more effects leads to smoother bias estimations
-thr <- 0.05/nEffects #significance threshold, fixed here as power varies
+iter <- 100 #Number of iterations
+nEffects <- 55278 #100 choose 2; more effects leads to smoother bias estimations
+threshold <- 0.05/nEffects #significance threshold, fixed here as power varies
 power <- c(0.01,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,0.99)
 
 ```
@@ -52,7 +52,7 @@ rCrit <- c() #Initiating vector
 
 for(p in 1:length(power)){
   Zb <- qnorm(power[p]) #Critical Z score for a given power
-    Za <- qnorm(1-thr/2) #Critical Z score for a given threshold
+    Za <- qnorm(1-threshold/2) #Critical Z score for a given threshold
         z <- (Zb+Za)/sqrt(nDiscovery-3) #Power scaled to the distribution at full sample size
         rCrit[p] <- tanh(z) #Fisher transformation from Z dist to Pearson Correlation Dist.
   }
@@ -67,7 +67,7 @@ Below, we generate a discovery sample such that 50 of the effects are true effec
 
 ```{r Discovery Sample Generation}
 
-nTrue <- 50 #round(nEffects/100); code here for 1% true effects, although only 12 effects lead to noise bias estimates.
+nTrue <- 500 #round(nEffects/100); code here for 1% true effects, although only 12 effects lead to noise bias estimates.
 
 nFalse <- nEffects - nTrue
 
@@ -87,7 +87,7 @@ for(p in 1:length(power)){
         
         Discovery$corrs[1:nTrue,p] <- tanh(rnorm(nTrue, mean=atanh(rCrit[p]), 1/sqrt(nDiscovery-3))) #True effects simulated by fisher transformation, with mean atanh(rho) and sd 1/sqrt(n-3). These z scores are then transformed again into pearson correlations by tanh.
         
-        df <- n-2
+        df <- nDiscovery-2
         
         Discovery$pvals[,p] <-  sapply(Discovery$corrs[,p]*sqrt(df/(1-Discovery$corrs[,p]^2)) , function(x){2*min(pt(x, df), pt(x, df, lower.tail=FALSE))}) #calculating p-values using 'fast' t distribution.
 
@@ -104,14 +104,13 @@ colnames(Samples) <- power
 
 Tibble <- Samples %>% as_tibble() %>% mutate(idx = row_number(), real = case_when(idx <= nTrue ~ 1, idx >nTrue ~ 0) ) %>% pivot_longer(cols=colnames(Samples), names_to = "power", values_to= "r")  %>% group_by(power, real) %>% arrange(real)
 
-
-DiscoveryPlot <- Tibble %>% ggplot(aes(x=power, y=r, colour=real))+ geom_jitter(shape=3, alpha=0.5, show.legend = FALSE) + 
-  scale_colour_gradient(low="gray", high='red') + 
-  scale_alpha_continuous(range= c(0.1,1))+ 
-  geom_hline(yintercept=tanh((qnorm(1-thr/2)/sqrt(nDiscovery-3))), linetype="dashed")+ 
+DiscoveryPlot <- Tibble %>% ggplot(aes(x=factor(power), y=r))+
+  scale_fill_manual(values=c("gray",'red'), labels=c("Random", "True")) + 
+  geom_violin(aes(fill = factor(real)), width=0.4, position="identity", alpha=0.5)+
+  geom_hline(yintercept=tanh((qnorm(1-threshold/2)/sqrt(nDiscovery-3))), linetype="dashed")+ 
   scale_shape_binned(solid=FALSE) + 
-  labs(y= "Observed Effect Size (Pearson r)", x="Statistical Power (Ground truth)", subtitle=paste("Discovery Samples (",nEffects, " effects at N = ",nDiscovery,")", sep="")) +
-  theme_classic()
+  labs(y= "Observed Effect Size (Pearson r)", x="Statistical Power (Ground truth)", subtitle=paste("Discovery Samples (",nEffects, " effects at N = ",nDiscovery,")", sep=""), fill="Effects") +
+  theme_classic()+theme(legend.position="top")
 
 DiscoveryPlot
 ```
@@ -120,7 +119,7 @@ In the figure above, red crosses are true effects while grey crosses are random;
 Now we have our discovery samples, we can simulate the resampling process of Marek et al. in order to compute statistical errors.
 
 
-```{r Fast Resampling Simulator}
+```{r Fast Resampling Simulator, include=FALSE}
 #Instead of resampling participants (as we skip simulating them here), we simulate data as if it had been resampled. Importantly, we use the fact that a resample adds sampling variability to the observed effect sizes in the discovery sample (full sample size). Essentially, this treats observed effect sizes as true effects.
 
 #Distributions. In order to generate random data from the parametric null-distribution of a Pearson correlation on n=900 points, we want to pass a uniform distribution through an inverse cumulative distribution function.
@@ -168,12 +167,12 @@ estimatedPower <- array(0, dim=c(length(binsize),length(power)))
 for (a in 1:length(power)){ #Looping over our thresholds
     
     sigidx<-c() #initialise our significant effect index
-    sigidx <- Discovery$pvals[,a]< thr #Find significant brain-behaviours in original sample according to our bonferroni corrected threshold.
+    sigidx <- Discovery$pvals[,a]< threshold #Find significant brain-behaviours in original sample according to our bonferroni corrected threshold.
    
       for (b in 1:length(binsize)){ #Looping over the resample size bins
         
 
-estimatedPower[b,a] <- 1-sum(Resample$pvals[sigidx, ,b,a]>=thr)/(iter*sum(sigidx)) #1- false negative, the latter estimated by the proportion of originally significant edges which are non-significant in the resample, averaged over all iterations. Note this returns NaN when no edges pass the iteration threshold in the original sample.
+estimatedPower[b,a] <- 1-sum(Resample$pvals[sigidx, ,b,a]>=threshold)/(iter*sum(sigidx)) #1- false negative, the latter estimated by the proportion of originally significant edges which are non-significant in the resample, averaged over all iterations. Note this returns NaN when no edges pass the iteration threshold in the original sample.
 
 }
 }
@@ -198,7 +197,7 @@ palette <- RColorBrewer::brewer.pal(11, "RdYlBu")
   theme_minimal() + 
   scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
   scale_x_continuous(breaks=binsize, trans='log10') + 
-    scale_fill_discrete(labels=thr) + 
+    scale_fill_discrete(labels=threshold) + 
     labs(subtitle='Estimate (Marek, Tervo-Clemmens et al.)',y='Statistical Power', x='Sample Size', colour='\U003B1') +
     scale_colour_manual(values=palette, labels=c("0.01"," "," "," "," "," "," "," "," ","0.99"))+ 
     guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="Discovery Power"))+
@@ -217,7 +216,7 @@ analyticPower <- array(0,c(length(binsize),length(power)))
 
 for(a in 1:length(power)){
   z <- atanh(rCrit[a]) #fisher transformation of effect size.
-    Za <- qnorm(1-thr/2) #Critical Z score for bonferroni corrected threhshold
+    Za <- qnorm(1-threshold/2) #Critical Z score for bonferroni corrected threhshold
       for(b in 1:length(binsize)){
         n <- binsize[b]
         Zb <- sqrt(n-3)*z-Za      
@@ -246,7 +245,7 @@ palette <- RColorBrewer::brewer.pal(11, "RdYlBu")
       theme_minimal() + 
       scale_y_continuous(limits=c(-0.1,0.7), n.breaks=8)+
       scale_x_continuous(breaks=binsize, trans='log10') +
-      scale_fill_discrete(labels=thr) + labs(subtitle='Bias (estimated - expected)', y='Statistical Power', x='Sample Size', colour='\U003B1') +
+      scale_fill_discrete(labels=threshold) + labs(subtitle='Bias (estimated - expected)', y='Statistical Power', x='Sample Size', colour='\U003B1') +
     scale_colour_manual(values=palette, labels=c("0.01"," "," "," "," "," "," "," "," ","0.99"))+ 
     guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="Discovery Power"))+
       theme(legend.position=c(0.2,0.35))
@@ -262,6 +261,6 @@ Figure3 <- ggarrange(DiscoveryPlot, PowerFigure, BiasFigure,nrow = 1, labels=c("
 ggsave('figures/Figure3.png',
  (Figure3),bg='transparent',  width = 32, height = 8, dpi = 900, units = "cm", device='png')
 
-
+Figure3
 ```
 
