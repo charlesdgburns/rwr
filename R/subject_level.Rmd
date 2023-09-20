@@ -1,0 +1,1186 @@
+---
+title: "BWAS comment"
+author: "Charles D.G Burns"
+date: '04-09-2023'
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+# Analysis Code
+
+Below is the code used data simulation and visualisation for 'Data-driven estimates of the reproducibility of univariate BWAS are biased.'
+
+For further clarifications or if any issues arise, please feel free contact
+CDGB via
+'[charlesdgburns\@gmail.com](mailto:charlesdgburns@gmail.com){.email}'.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggpubr) #Includes ggarrange
+library(MASS)
+library(tidyverse) #for ggplot and other data wrangling packages. Must mask MASS for select() and filter() functions 
+
+
+if(dir.exists('figures')==FALSE) dir.create('figures') #creates folder for figures in working directory, if missing.
+
+
+set.seed(2022) #Setting the seed to the Marek et al. year for reproducibility.
+knitr::opts_chunk$set(cache = T) #Making the seed global so it applies to all chunks.
+```
+
+## Main body
+
+### Statistical errors are biased under the null (Random data simulations)
+
+```{r Null-sample, include=FALSE}
+#### Input variables ####
+
+#The parameters below may be scaled to lower computation time.
+
+nSample <- 1000; #sample size of our simulated null-data, as well as true data later on.
+nROIs <- 50; #the number of regions which we are correlating to form our edges.
+nEdges <- choose(nROIs,2); #the final number of edges.
+binsize <- c(25,33,50, 70, 100,135, 200, 265, 375, 525, 725, 1000); #resample size bins
+iter <- 100 #Number of iterations
+
+## Data generation function ##
+
+generate_null <- function(nSample, nEdges){
+
+#Our behavioural factor:
+factor <- 15*rnorm(nSample, mean = 1, sd = 0.5) #this is rather arbitrary; we just expect the factor to be normally distributed.
+
+#initialise matrix with all subjects' edge-correlations.
+rmats <- matrix(0, nSample,nEdges)
+
+for(s in 1:nSample){
+#Simulate time-points for each ROI. The number of timepoints here will change the standard deviation of edge-correlations due to sampling variability on random points.
+m <- sapply(X = 1:nROIs, FUN = function(x) runif(15))
+#We correlate the timepoints of each ROI with each other:
+cors <- cor(x = m, method = "pearson")
+#We're only interested in one of the off-diagonals, otherwise there'd be duplicates:
+rmats[s,] <- cors[upper.tri(cors, diag = FALSE)]
+}
+
+#we name each column according to edges; e1 to e1225
+colnames(rmats) <- lapply(1:nEdges, FUN = function(x) paste('e',x, sep=""))
+
+
+
+#We collate our data now into two null-datasets
+#Each matrix has a row for each subject, and a column for the factor, and each edge correlation.
+
+out <- cbind(factor, rmats) 
+
+return(out)
+
+}
+
+NullBig <- generate_null(10000, nEdges) #For sampling with replacement
+
+NPcorrs <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(NullBig[,1], NullBig[,x])$estimate)
+
+NPpvals <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(NullBig[,1], NullBig[,x])$p.value)
+
+NullSample <- generate_null(nSample, nEdges) #Our Null-sample
+
+#Here we also compute brain-behaviour associations (edge-factor correlations) for our null-sample for comparison later. Note in Marek et al. (2022) these are referred to as 'full sample corrs/pvals' shorthanded fscorrs fspvals.
+
+NScorrs <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(NullSample[,1], NullSample[,x])$estimate)
+
+NSpvals <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(NullSample[,1], NullSample[,x])$p.value)
+```
+
+```{r Data visualisation checks, include=FALSE}
+#Simply a chunk / space to make sure the data looks as expected
+
+#Population Factor histogram (across subjects):
+PopFactorHist <- NullBig[,1] %>% as.tibble() %>%
+  ggplot(aes(x=value)) +
+  geom_histogram() +
+  labs(x='Factor')+
+  theme_classic()
+  
+PopFactorHist
+
+  #Sample Factor histogram (across subjects):
+  PopSampleHist <- NullSample[,1] %>% as.tibble() %>%
+    ggplot(aes(x=value)) +
+    geom_histogram() +
+    labs(x='Factor')+
+    theme_classic()
+  
+  PopSampleHist
+
+#Edge correlations histogram (for one example subject):
+EdgeHist <- NullBig[2,2:(nEdges+1)] %>% as.tibble() %>%
+  ggplot(aes(x=value)) +
+  geom_histogram() +
+  xlim(-1,1) +
+  labs(x='Edge correlation')+
+  theme_classic()
+  
+EdgeHist
+
+```
+
+```{r Resampling with Replacement, include=FALSE}
+#Here we emulate Marek et al.'s (2022) 'abcd_edgewise_correlation_iterative_reliability_single_factor.m' in R
+
+## Function Definition ##
+
+# Input # 
+#binsize defined in the previous chunk.
+#iter also defined in the previous chunk.
+data <- NullSample # the input will look like our datasets generated above.
+
+rwr.edgewise.corrs <- function(data, binsize, iter){
+  
+  data <- as.matrix(data) #make matrix for numeric indexing.
+  nEdges <- (dim(data)[2]-1) #extract number of edges from dataset
+  nSubjects <- dim(data)[1] #extract number of subjects from dataset
+  
+  #Initialise data matrices; we want to output a 3-dimensional matrix, with size [nEdges x nIterations x nBins]
+  corrs <-array(0, c(nEdges, iter, length(binsize)))
+  pvals <-array(0, c(nEdges, iter, length(binsize)))
+  
+  for(i in 1:iter){
+  for(b in 1:length(binsize)){
+    #We resample by indexing; this is done with replacement.
+    idx <- sample(c(1:nSubjects), binsize[b], replace=TRUE)  
+    resample <- data[idx,]
+    
+    #We then calculate edge-behaviour pvalues and correlations
+    
+    #Over the list of all edges we perform correlations with the behavioural factor across the resample subjects;we extract pvalues and correlations as lists.
+    
+    temp_Pearson <- sapply(X=2:(nEdges+1), FUN=function(X) cor.test(resample[,1], resample[,X])[3:4]) #Performing correlations list-wise and outputting a string with [3] pvalues and [4] estimates, which is 2*nEdges long, with pvalues on odd rows and correlations on even rows:
+    
+     pvals[,i,b] <- sapply(X=1:(nEdges), FUN=function(X) as.numeric(temp_Pearson[2*X-1]))
+    
+   corrs[,i,b] <- sapply(X=1:(nEdges), FUN=function(X) as.numeric(temp_Pearson[2*X]))  
+
+  }
+  }
+  
+  out <- list()
+  
+  out$corrs <- corrs
+  out$pvals <- pvals
+  out$example <- resample
+    
+  return(out)
+}
+
+#### Calculating edgewise correlations for our null-sample ####
+NullSampleOut <- rwr.edgewise.corrs(NullSample, binsize, iter)
+
+```
+
+```{r Generating data iteratively (sampling from infinite population)}
+#In order to determine how resampling a large dataset differs from actually collecting new data, want to compare resampling from a null-sample to generating many samples (i.e., sampling from an infinite-size null-population).
+
+#We generate 100 samples at each logarithmically increasing sample size used when resampling. We compute brain-behaviour correlations for each generated sample, and store this in a dataframe similar to the rwr output.
+
+
+#Initialising#
+
+null_gen <- list() #Final output will be a list with $corrs, $pvals, and $example, as in rwr.edgewise.corrs output
+  
+  #we want to output a 3-dimensional matrix, with size [nEdges x nIterations x nBins]
+  corrs <-array(0, c(nEdges, iter, length(binsize))) 
+  pvals <-array(0, c(nEdges, iter, length(binsize)))
+  
+#Begin loops#
+  
+for (i in 1:iter){ #Looping over iterations
+  for (b in 1:length(binsize)){ #Looping over binsizes
+
+    #Generate data
+    data <- as.matrix(generate_null(binsize[b],nEdges))
+
+    #We then calculate edge-behaviour p-values and correlations.
+    
+    #Over the list of all edges we perform correlations with the behavioural factor across the generated subjects;we extract pvalues and correlations as lists.
+    
+    temp_Pearson <- sapply(X=2:(nEdges+1), FUN=function(X) cor.test(data[,1], data[,X])[3:4]) #Performing correlations list-wise and outputting a string with pvalues [3] and estimates [4], which is 2*nEdges long, with pvalues on odd rows and correlations on even rows:
+    
+     pvals[,i,b] <- sapply(X=1:(nEdges), FUN=function(X) as.numeric(temp_Pearson[2*X-1])) 
+    
+     corrs[,i,b] <- sapply(X=1:(nEdges), FUN=function(X) as.numeric(temp_Pearson[2*X]))  
+
+  }
+}
+  null_gen$corrs <- corrs
+  null_gen$pvals <- pvals
+  null_gen$example <- data
+
+```
+
+```{r Statistical Errors, include=FALSE}
+
+#Here we are adapting Marek et al.'s 2022 'abcd_statistical_errors.m' file to R
+
+#INPUT VARIABLES#
+
+ogpvals <- NSpvals #original sample or population correlations we check against. We code with null sample data as an example.
+ogcorrs <- NScorrs
+rwrout <- NullSampleOut #input to the function will be the output of rwr.edgewise.corrs, this should be in correspondence with the data chosen above.
+thr <- c(.05, .01, .001, .0001, .00001, .000001, .0000001) #significance thresholds, ranging from .05 to 10^-7
+mag <- c(0.5, 1, 2) #magnitudes of inflation; 50%, 100%, and 200% as in Marek et al. (2022) fig 3b.
+
+#Function definition#
+
+statErrors <- function(ogpvals, ogcorrs, rwrout, thr, mag){#admittedly too many inputs, but 
+  #Initialise matrices
+  
+  type1<- array(0,c(dim(rwrout$corrs)[3],length(thr))) #nResampleSizeBins x nThresholds
+  type2 <- type1 #Same dimensions as type1
+  power <- type1 #Same dimensions as type1
+  typeS <- type1 #Same dimensions as type1
+  typeM <- array(0, c(dim(rwrout$corrs)[3],length(thr),length(mag)))
+  
+  for (a in 1:length(thr)){ #Looping over our thresholds
+    sigidx<-c() #initialise our significant edge index
+    sigidx <- ogpvals < thr[a] #Find significant brain-behaviours in original sample according to a given threshold.
+    diridx <- c() #initialise our direction index
+    diridx <- ogcorrs > 0 #positive correlations are TRUE (1) and negative are FALSE (0)
+  
+      for (b in 1:dim(rwrout$pvals)[3]){ #Looping over the resample size bins
+type1[b,a] <- sum(rwrout$pvals[!sigidx, ,b]<thr[a])/(iter*sum(!sigidx)) #proportion of originially non-significant edges which are significant in the resample, averaged over all iterations.
+        
+type2[b,a] <- sum(rwrout$pvals[sigidx,,b]>=thr[a])/(iter*sum(sigidx)) #proportion of originally significant edges which are non-significant in the resample, averaged over all iterations. Note this returns NaN when no edges pass the iteration threshold in the original sample.
+   
+power[b,a] <- 1-type2[b,a] #power = 1-false negative rates
+
+typeS[b,a] <- (sum(rwrout$corrs[diridx,,b]<0)/(iter*sum(diridx)) + sum(rwrout$corrs[!diridx,,b]>0)/(iter*sum(!diridx)))/2 #Proportion of of correlations with opposite correlation sign in the resample versus original sample. (here we average over positive -> negative and negative -> positive, and across all iterations). These are unthresholded.
+
+## the next 'statistical errors' require more work: ##
+
+for (m in 1:length(mag)){#Inflation (Type M) requires another 'for' loop over the inflation magnitude thresholds
+
+  still_sig <- rwrout$pvals[sigidx, ,b]<thr[a] #For each originially significant correlation, extract only those significant in the resamples; across iterations for a given resample size bin.
+  
+resigcorrs <- rwrout$corrs[sigidx, ,b][still_sig] # a string of correlations which are significant again across all iterations of a resample size
+
+ogresigcorrs <- replicate(iter, as.numeric(ogcorrs[sigidx]))[still_sig] # a string of correlations in the original sample which correspond to those significant again in each iteration for a given resample size bin. This is in order to compare values later.
+
+
+ifelse(length(ogresigcorrs)==0,ogresigcorrs<-NA, ogresigcorrs<-ogresigcorrs)  #when there are no significant correlations in any of the resample iterations, R returns numeric(0) instead of NaN. Similarly when there are no significant correlations in the original sample (under a given threshold) ogresigcorrs returns list(). In both cases the length is 0, so we fix this here for the code below.
+
+#We want to avoid looking solely at magnitude, and need to take direction of effect into account (negative or positive) for inflation:
+
+temp_inflated<- c()
+
+if(sum(sigidx)==1){ #In the case there's just 1 sig corr for a given threshold, we cannot index out a list, so:
+       these_corr <- rwrout$corrs[sigidx, ,b][c]
+        resig_idx <- rwrout$pvals[sigidx, ,b][c] < thr[a]
+        pos_idx <- these_corr >0
+       resig_pos_idx <- resig_idx&pos_idx
+       resig_neg_idx <- resig_idx&!pos_idx
+       if_else(ogcorrs[sigidx][c]<0,#if the correlation is originally significant
+          temp_inflated[c] <- sum(these_corr[resig_neg_idx]<(as.numeric(ogcorrs[sigidx])[c]*(1+mag[m])))/length(these_corr[resig_neg_idx]), #when originally negative
+          temp_inflated[c] <- sum(these_corr[resig_pos_idx]>(as.numeric(ogcorrs[sigidx])[c]*(1+mag[m])))/length(these_corr[resig_pos_idx])) #when originally positive
+}else{
+if(sum(sigidx)!=0){ #In case our significant threshold is too small, so that no significant values are observed.
+for (c in 1:sum(sigidx)){ #loop over all originally significant correlations, for a given binsize and iteration.
+
+  these_corr <- rwrout$corrs[sigidx, ,b][c,] #for each originally significant correlation (c), in a resample size bin (b), across all iterations.
+  
+#note: We are interested only in those correlations in resample iterations which are again significant and in the right direction.
+  resig_idx <- rwrout$pvals[sigidx, ,b][c,] < thr[a] #we index those which are again significant (under a given threshold) across iterations
+  pos_idx <- these_corr >0 #and index those which are positive, in order to later correct for sign errors (guarding against type 1). 
+
+  resig_pos_idx <- resig_idx&pos_idx #resignificant and positive across iterations
+  resig_neg_idx <- resig_idx&!pos_idx #resignificant and negative across iterations
+  
+  
+  
+  if_else(ogcorrs[sigidx][c]<0,#if the correlation is originally significant
+          temp_inflated[c] <- sum(these_corr[resig_neg_idx]<(as.numeric(ogcorrs[sigidx])[c]*(1+mag[m])))/length(these_corr[resig_neg_idx]), #when originally negative
+          temp_inflated[c] <- sum(these_corr[resig_pos_idx]>(as.numeric(ogcorrs[sigidx])[c]*(1+mag[m])))/length(these_corr[resig_pos_idx])) #when originally positive
+}
+  } else{ temp_inflated <- NA}
+}
+
+typeM[b,a,m] <- mean(temp_inflated, na.rm=TRUE) #proportion of correlations which are: originally significant (p < thr[a]), significant again in the resample (re-significant; p < thr[a]), in the same direction as the original correlation, and then inflated (according to inflation threshold given by magnitude); averaged over iterations for each resample size bin. 
+
+#We note that the correction for type 1/s errors by checking that the that sign is consistent inflates typeM estimations in the null-truth. 
+
+}
+}
+
+#We compute replication rates (as in Marek et al. 2022 fig 3.e) seperately in the next chunk as these require iterative resampling again and are quite time consuming. 
+
+      }
+
+  out<- list()
+  
+  out$type1 <- type1
+  out$type2 <- type2
+  out$power <- power
+  out$typeS <- typeS
+  out$typeM <- typeM
+
+  return(out)
+}
+
+
+## Calculating statistical errors (SE) ##
+NullSampleSE <- statErrors(NSpvals, NScorrs, NullSampleOut, thr, mag)
+NullTruthSE <- statErrors(NSpvals, NScorrs, null_gen, thr, mag) #We use the null-sample p-values and correlations as the 'discovery' sample, which we try to replicate in each generated sample
+```
+
+```{r rwr replication rates, include = FALSE}
+
+#Variables 
+ogsample <- NullSample #Original sample, used for replication rate graph.
+repli_binsize <- c(25, 33, 50, 70, 100, 135, 200, 265, 375, 500) #Cutting binsize 'short' at 500, or whichever is half of the original sample size. May need adjusting.
+thr <- c(.05, .01, .001, .0001, .00001, .000001, .0000001) #significance thresholds, ranging from .05 to 10^-7 as in Marek et al. (2022)
+
+
+#Function definition#
+repli_rate <- function(ogsample, repli_binsize, thr){
+
+#Initialise output 
+out <- array(0,c(length(repli_binsize),length(thr))) #an nBinsize X nThr matrix; we have an estimate for each binsize, and draw a line for each threshold.
+  
+#Replication rate requires performing binsize iterations again, now on a discovery and replication sample; we split our original sample in half; calculate correlations and p-values. Then on each sample we perform the resampling up to half the sample size.
+
+discovery <- ogsample[1:(dim(ogsample)[1]/2),]
+replication <- ogsample[(dim(ogsample)[1]/2+1):dim(ogsample)[1],]
+
+#We now need to calculate 'original sample' correlations for our discovery and replication sample.
+disco_corrs <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(discovery[,1], discovery[,x])$estimate)
+
+disco_pvals <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(discovery[,1], discovery[,x])$p.value)
+
+repli_corrs <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(replication[,1], replication[,x])$estimate)
+
+repli_pvals <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(replication[,1], replication[,x])$p.value)
+
+#we then perform iterative resampling with replacement at each repli_binsize, calculating p-values and correlations for these:
+
+disco_rwr <- rwr.edgewise.corrs(discovery, repli_binsize, iter)
+repli_rwr <- rwr.edgewise.corrs(replication, repli_binsize, iter)
+
+discovery_sig_idx <- array(0, dim = c(100,2)) #initialise matrix  
+
+for (a in 1:length(thr)){ #Looping over our thresholds
+
+  for (b in 1:length(repli_binsize)){ #Looping over the resample size bins
+
+discovery_sig_idx <- disco_rwr$pvals[, , b] < thr[a] #extract an nEdges x nIterations T/F matrix indexing significance under a given threshold.
+
+out[b,a] <- sum( (repli_rwr$pvals[ , ,b])[discovery_sig_idx] < thr[a] )/(sum(discovery_sig_idx)) #proportion of originally significant edges which are significant in the resample, averaged over all iterations.
+      }
+
+    }
+
+return(out)
+
+}
+
+NullSampleSE$repli <- repli_rate(NullSample, repli_binsize, thr)
+```
+
+```{r Regenerated replication rates}
+#Replication rates when regenerating data, rather than resampling with replacement from a discovery/replication dataset.
+
+#When generating random data each time, we expect this to be equivalent to our statistical power estimate up to half sample size (500).
+
+#Initialising matrices
+
+repli_gen <- list()  #we output a list for correlations and p-values of iteratively generated discovery and replication null-data.
+
+#Initialise corrs/pvals matrices for the generated discovery/replication datasets.
+  disco_corrs <-array(0, c(nEdges, iter, length(binsize))) 
+  disco_pvals <-array(0, c(nEdges, iter, length(binsize)))
+  
+  repli_corrs <-array(0, c(nEdges, iter, length(binsize))) 
+  repli_pvals <-array(0, c(nEdges, iter, length(binsize)))
+  
+
+#Begin loops#
+  
+#Generating data and calculating corrs/p-values: 
+  
+for (i in 1:iter){ #Looping over iterations
+  for (b in 1:length(repli_binsize)){ #Looping over binsizes; note this is the repli_binsize defined above.
+
+    #Generate data
+    disco_data <- as.matrix(generate_null(repli_binsize[b],nEdges))
+    
+    repli_data <- as.matrix(generate_null(repli_binsize[b],nEdges))
+
+    #We then calculate edge-behaviour p-values and correlations.
+    
+    #Over the list of all edges we perform correlations with the behavioural factor across the generated subjects;we extract pvalues and correlations as lists.
+    
+    disco_temp_Pearson <- sapply(X=2:(nEdges+1), FUN=function(X) cor.test(disco_data[,1], disco_data[,X])[3:4]) #Performing correlations list-wise and outputting a string with pvalues [3] and estimates [4], which is 2*nEdges long, with pvalues on odd rows and correlations on even rows:
+    
+     disco_pvals[,i,b] <- sapply(X=1:(nEdges), FUN=function(X) as.numeric(disco_temp_Pearson[2*X-1])) 
+    
+     disco_corrs[,i,b] <- sapply(X=1:(nEdges), FUN=function(X) as.numeric(disco_temp_Pearson[2*X]))  
+     
+    repli_temp_Pearson <- sapply(X=2:(nEdges+1), FUN=function(X) cor.test(repli_data[,1], repli_data[,X])[3:4]) #Performing correlations list-wise and outputting a string with pvalues [3] and estimates [4], which is 2*nEdges long, with pvalues on odd rows and correlations on even rows:
+    
+     repli_pvals[,i,b] <- sapply(X=1:(nEdges), FUN=function(X) as.numeric(repli_temp_Pearson[2*X-1])) 
+    
+     repli_corrs[,i,b] <- sapply(X=1:(nEdges), FUN=function(X) as.numeric(repli_temp_Pearson[2*X]))  
+
+  }
+}
+
+  repli_gen$dpvals <- disco_pvals
+  repli_gen$dcorrs <- disco_corrs
+  repli_gen$rpvals <- repli_pvals
+  repli_gen$rcorrs <- repli_corrs
+  
+#Calculating the replication rates
+  
+out <- array(0,c(length(repli_binsize),length(thr)))#FINAL OUTPUT: an nBinsize X nThr matrix; we have an estimate for each binsize and want to draw a line for each threshold.
+  
+for (a in 1:length(thr)){ #Looping over our thresholds
+
+  for (b in 1:length(repli_binsize)){ #Looping over the resample size bins
+
+discovery_sig_idx <- repli_gen$dpvals[, , b] < thr[a] #extract an nEdges x nIterations T/F matrix indexing significance under a given threshold.
+
+out[b,a] <- sum( (repli_gen$rpvals[ , ,b])[discovery_sig_idx] < thr[a] )/(sum(discovery_sig_idx)) #proportion of originally significant edges which are significant in the resample, averaged over all iterations.
+      }
+
+    }
+  
+NullTruthSE$repli <- out
+
+```
+
+```{r Statistical error data visualisation functions, include = FALSE}
+ 
+#Input data will look like NullSampleSE. This is the output of our statErrors function, with the replication rate appended.
+
+#Colour palette
+blues <- RColorBrewer::brewer.pal(9, "Blues")[3:9]
+purples <- RColorBrewer::brewer.pal(5, "Purples")[3:5]
+
+### Defining functions ###
+type1_figure <- function(dataSE){
+
+ colnames(dataSE$type1) <- thr
+  
+  wrangle <- dataSE$type1 %>%
+    as.tibble() %>% #tibble for ggplot 
+    pivot_longer(cols= colnames(dataSE$type1), names_to = 'alpha', values_to='type1') %>% #allows grouping by significance thresholds
+    mutate(resize = rep(binsize[1:12], each=length(thr)), alpha=factor(alpha, levels=thr)) %>% #Add a column for resample size bins (our x-axis)
+    group_by(alpha) #group_by for distinct lines.
+  
+  out <- wrangle %>% ggplot() + 
+  geom_line(aes(x=resize, y=type1, colour=alpha) ) + 
+  theme_classic() + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10') + scale_fill_discrete(labels=thr) + 
+    labs(subtitle = 'False Positives (Type I)', y='Type I error rate', x='Resample size (log scale)', colour='\U003B1') +
+  scale_colour_manual(values=blues, labels=c(expression(paste(0.05))," "," "," "," ",expression(paste(10^{-7}))))+ 
+  guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="\U003B1 (threshold)"))+
+    theme(legend.position=c(0.17,0.35))
+
+  return(out)
+}
+
+type2_figure <- function(dataSE){
+
+ colnames(dataSE$type2) <- thr
+  
+  wrangle <- dataSE$type2 %>%
+    as.tibble() %>% #tibble for ggplot 
+    pivot_longer(cols= colnames(dataSE$type2), names_to = 'alpha', values_to='type2') %>% #allows grouping by significance thresholds
+    mutate(resize = rep(binsize[1:12], each=length(thr)), alpha=factor(alpha, levels=thr)) %>% #Add a column for resample size bins (our x-axis)
+    group_by(alpha) #group_by for distinct lines.
+  
+  out <- wrangle %>% ggplot() + 
+  geom_line(aes(x=resize, y=type2, colour=alpha) ) + 
+  theme_classic() + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10') + scale_fill_discrete(labels=thr) + 
+    labs(subtitle = 'False Negatives (Type II)', y='Type II error rate', x='Resample size (log scale)', colour='\U003B1') +
+  scale_colour_manual(values=blues, labels=c(expression(paste(0.05))," "," "," "," ",expression(paste(10^{-7}))))+ 
+  guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="\U003B1 (threshold)"))+
+    theme(legend.position=c(0.17,0.35))
+
+  return(out)
+}
+
+typeS_figure <- function(dataSE){
+
+  
+  wrangle <- dataSE$typeS[,1] %>%
+    as.tibble() %>% 
+    mutate(resize = rep(binsize[1:12]))
+  
+  out <- wrangle %>% ggplot() + 
+  geom_point(aes(x=resize, y=value)) +
+  geom_line(aes(x=resize, y=value) ) + 
+  theme_classic() + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10') + 
+    scale_fill_discrete(labels=thr) + 
+    labs(subtitle='Sign error (Type S; unthresholded)', y='Sign error rate', x='Resample size (log scale)', colour='\U003B1')
+
+  return(out)
+}
+
+typeM_figure <- function(dataSE){
+  
+  ## first we turn the nBins X nThr X nMag matrix into an (nBins*nMag) X nThr matrix:
+  longer<- rbind(dataSE$typeM[,,1],dataSE$typeM[,,2], dataSE$typeM[,,3])
+  colnames(longer) <- thr
+  
+  wrangle <- longer[,1:2] %>%
+    as.tibble() %>% #tibble for ggplot 
+    mutate(resize = rep(binsize[1:length(binsize)], length(mag)), magnitude = rep(as.factor(mag[1:3]), each=length(binsize))) %>%
+    pivot_longer(cols= colnames(longer[,1:2]), names_to = 'alpha', values_to='typeM') %>% #allows grouping by significance thresholds and magnitude of inflation
+    group_by(alpha, magnitude) #group_by for distinct lines.
+  
+  out <- wrangle %>% ggplot() + 
+  geom_point(aes(x=resize, y=typeM, colour=magnitude))+
+  geom_line(aes(x=resize, y=typeM, colour=magnitude, linetype=alpha) ) + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10') + scale_fill_discrete(labels=thr) + 
+    labs(subtitle = 'Inflation (Type M)', y='Inflated Correlation', x='Resample size (log scale)', colour='Magnitude of inflation', linetype = '\U003B1 (threshold)') +
+    scale_linetype_manual(values=c('dashed','solid'), labels=c('P < 0.01','P < 0.05'))+
+  scale_colour_manual(values=purples[1:3], labels=c('50%','100%', '200%'))+ 
+    theme_classic() + 
+    theme(legend.position=c(0.20,0.32), legend.key.height = unit(.20,'cm'), legend.text = element_text(size=6), legend.title = element_text(size=8))
+  
+  return(out)
+}
+
+repli_figure <- function(dataSE){
+
+ colnames(dataSE$repli) <- thr
+  
+  wrangle <- dataSE$repli %>%
+    as.tibble() %>% #tibble for ggplot 
+    pivot_longer(cols= colnames(dataSE$repli), names_to = 'alpha', values_to='repli') %>% #allows grouping by significance thresholds
+    mutate(resize = rep(repli_binsize, each=length(thr)), alpha=factor(alpha, levels=thr)) %>% #Add a column for resample size bins (our x-axis)
+    group_by(alpha) #group_by for distinct lines.
+  
+  out <- wrangle %>% ggplot() + 
+  geom_line(aes(x=resize, y=repli, colour=alpha) ) + 
+  theme_classic() + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10', limits = c(25,1000)) + 
+    scale_fill_discrete(labels=thr) + 
+    labs(subtitle = 'Probability of replication', y='Successful replications', x='Resample size (log scale)', colour='\U003B1') +
+   scale_colour_manual(values=blues, labels=c(expression(paste(0.05))," "," "," "," ",expression(paste(10^{-7}))))+ 
+  guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="\U003B1 (threshold)"))+
+    theme(legend.position=c(0.17,0.35))
+
+  return(out)
+}
+
+power_figure <- function(dataSE){
+  
+  colnames(dataSE$power) <- thr
+  
+  wrangle <- dataSE$power %>%
+    as.tibble() %>% #tibble for ggplot 
+    pivot_longer(cols= colnames(dataSE$power), names_to = 'alpha', values_to='power') %>% #allows grouping by significance thresholds
+    mutate(resize = rep(binsize[1:12], each=length(thr)), alpha=factor(alpha, levels=thr)) %>% #Add a column for resample size bins (our x-axis)
+    group_by(alpha) #group_by for distinct lines.
+  
+  out <- wrangle %>% ggplot() + 
+  geom_line(aes(x=resize, y=power, colour=alpha) ) + 
+  theme_classic() + 
+  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_x_continuous(breaks=binsize, trans='log10') + scale_fill_discrete(labels=thr) + labs(y='Statistical Power', x='Resample size (log scale)', colour='\U003B1') +
+   scale_colour_manual(values=blues, labels=c(expression(paste(0.05))," "," "," "," ",expression(paste(10^{-7}))))+ 
+  guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="\U003B1 (threshold)"))+theme(legend.position=c(0.17,0.35))
+  return(out)
+}
+
+```
+
+```{r Figure 1: Estimated statistical errors and reproducibility of random noise, include = FALSE}
+### Graphs ###
+NStype1 <- type1_figure(NullSampleSE)
+
+NStype2 <- type2_figure(NullSampleSE)
+
+NStypeS <- typeS_figure(NullSampleSE)
+
+NStypeM <- typeM_figure(NullSampleSE)
+
+NSrepli <- repli_figure(NullSampleSE)
+
+NSpower <- power_figure(NullSampleSE)+labs(subtitle=('Statistical Power'))
+
+figure1<-ggarrange(NStype2, NStypeM, NStypeS, NSpower, NSrepli, NStype1,  nrow=2, ncol=3, labels=c('a','b','c','d', 'e', 'f'))
+
+ggsave('figures/Figure1.png', 
+       (figure1),bg='transparent',  width = 32, height = 16, dpi = 900, units = "cm", device='png')
+```
+
+```{r Extended Data: Expected statistical errors and reproducibility of random noise, include=FALSE}
+
+NTtype1 <- type1_figure(NullTruthSE) +labs(x='Generated sample size (log scale)')
+
+NTtype2 <- type2_figure(NullTruthSE) +labs(x='Generated sample size (log scale)')
+
+NTtypeS <- typeS_figure(NullTruthSE) +labs(x='Generated sample size (log scale)')
+
+NTtypeM <- typeM_figure(NullTruthSE) +labs(x='Generated sample size (log scale)')
+
+NTrepli <- repli_figure(NullTruthSE) +labs(x='Generated sample size (log scale)')
+
+NTpower <- power_figure(NullTruthSE) +labs(x='Generated sample size (log scale)',subtitle=('Statistical Power'))
+
+ExtData<-ggarrange(NTtype2, NTtypeM, NTtypeS, NTpower, NTrepli, NTtype1,  nrow=2, ncol=3, labels=c('a','b','c','d', 'e', 'f'))
+
+ggsave('figures/ExtData.png', 
+       (ExtData),bg='transparent',  width = 32, height = 16, dpi = 900, units = "cm", device='png')
+
+```
+
+### Explaining the bias - "relative sampling variability"
+
+```{r Figure 2: Relative sampling variability}
+##Note that for the figure in preprint, annotations and distribution over iterations are combined.
+
+
+# Distribution of brain-behaviour correlations in our original sample #
+
+os_corrsHist  <- NScorrs %>% as.tibble() %>%
+  ggplot(aes(x=value)) +
+  geom_histogram(colour="black", fill=4, alpha=0.5, binwidth=0.01) +
+  labs(subtitle="Original Sample, 1,225 correlations (Pearson)", x="brain-behaviour correlation", y="Frequency")+
+   coord_cartesian(xlim = c(-0.15,0.15), ylim=c(0,170))+
+  stat_function(fun = function(x) dnorm(x, mean = 0, sd = 0.0316386) * 12.25)+ #Parametric gaussian from null-distribution of Pearson correlations
+  theme_classic()
+
+# Distribution of p-values in our original sample #
+
+os_pvalHist  <-NSpvals %>% as.tibble() %>%
+  ggplot(aes(x=value)) +
+  geom_histogram(binwidth = 0.01, colour="black", fill=4, alpha=0.5, size=0.2) +
+  coord_cartesian(xlim = c(0,1), ylim=c(0,70))+
+  labs(subtitle="Original sample, 1,225 correlations (Pearson)", x="brain-behaviour P value", y="Frequency")+
+  theme_classic()
+
+
+# Distribution of brain-behaviour correlations in our resample #
+
+rs_corrsHist  <- NullSampleOut$corrs[,iter,length(binsize)] %>% as.tibble() %>%
+  ggplot(aes(x=value)) +
+  geom_histogram(binwidth = 0.01, colour="black", fill=4, alpha=0.5) +
+  labs(subtitle="Resample, 1,225 correlations (Pearson)", x="brain-behaviour correlation", y="Frequency")+
+   coord_cartesian(xlim = c(-0.15,0.15), ylim=c(0,170))+
+  stat_function(fun = function(x) dnorm(x, mean =0, sd = 0.04474374) * nEdges * 0.01) + #Parametric solution, scaled by number of edges * binwidth
+  theme_classic()
+
+
+# Distribution of p-values in our original sample #
+
+rs_pvalHist <-NullSampleOut$pvals[,iter,length(binsize)] %>% as.tibble() %>%
+  ggplot(aes(x=value)) +
+  geom_histogram(binwidth = 0.01, colour="black", fill=4, alpha=0.5, size=0.2) +
+  coord_cartesian(xlim = c(0,1), ylim=c(0,70))+
+  labs(subtitle="Resample, 1,225 correlations (Pearson)", x="brain-behaviour P value", y="Frequency")+
+  theme_classic()
+
+
+Figure2 <- ggarrange(os_corrsHist, os_pvalHist,  rs_corrsHist,  rs_pvalHist, nrow=2, ncol=2, heights=c(4,4), labels=c('a','b','c','d'))
+
+ggsave('figures/Figure2.png', 
+       (Figure2),bg='transparent',  width = 20, height = 16, dpi = 900, units = "cm", device='png')
+# Distribution of an example (max in original sample) brain-behaviour correlation across iterations in the resample#
+
+max<-which(NScorrs==max(NScorrs))
+
+NSedgeIterHist <- NullSampleOut$corrs[max, ,length(binsize)] %>% as.tibble() %>%
+  ggplot(aes(x=value)) +
+  geom_histogram(colour="black", fill=4, alpha=0.5, binwidth=0.01, size=0.2) +
+  #geom_vline(xintercept=NScorrs[max])+
+  stat_function(fun = function(x) dnorm(x, mean = mean(NullSampleOut$corrs[max, ,length(binsize)]), sd = 0.0316386) * iter * 0.01) + #note this is scaled by number of iterations * binwidth// sd is parametric, based on width of null-pearsons
+ # geom_text(aes(NScorrs[max],18,label = paste("r =",round(NScorrs[max],3)), vjust = -1,)) +
+  labs(subtitle="Resample, 100 iterations", x=paste("brain-behaviour correlation", max), y="Frequency")+
+  coord_cartesian(xlim = c(-0.2,0.2), ylim=c(0,20))+
+  theme_classic()
+
+ggsave('figures/Figure2e.png', (NSedgeIterHist), bg='transparent', width=7, height=7, dpi=900, units='cm', device='png')
+
+```
+
+## Supplementary information
+
+### Correcting for biases under null
+
+```{r Adjusting null-distributions and p-values, include=FALSE}
+#Shamelessly referring to wiki here: https://en.wikipedia.org/wiki/Student%27s_t-distribution
+#Valuable resource for understanding how this distribution is related (approaching as N grows) to the Gaussian distribution.
+
+#For our adjusted p-value, we 'manually' calculate p-values according to the resample null-distribution for a given original sample size and resample size.
+#To save computation time, we can take the output of resampling with replacement, and simply recalculate p's from the correlations and our parametric adjusted null-distribution.
+
+#Here's a small walk-through before implementing this in our adjusted resampling-with-replacement pearson correlations.
+
+r <- 0.2 #example correlation
+n <- 32000 #original full sample size
+nr <- 900 #an example resample size
+
+
+primary_dist <- function(x){(1-x^2)^((n-4)/2)/beta(1/2,(n-2)/2)} #exact null-distribution of Pearson correlations on n points (sample size). 'RED' in the graph below
+
+secondary_dist <- function(x){(1-x^2)^((nr-4)/2)/beta(1/2,(nr-2)/2)} #exact null-distribution of Pearson correlation on nr points (resample size). 'GREEN' in the graph below; may completely cover the red primary distribution.
+
+primary_var_int <- function(x){x^2*((1-x^2)^((n-4)/2)/beta(1/2,(n-2)/2))}#variance given by the integral of (x^2-mean)*f(x), here the mean is 0.  
+
+secondary_var_int <- function(x){x^2*((1-x^2)^((nr-4)/2)/beta(1/2,(nr-2)/2))} #as above, now for our secondary distribution.
+
+var1 <- integrate(primary_var_int, -1,1)$value #variance of a continuous function, namely the probability distribution of Pearsons on n points.
+
+var2 <- integrate(secondary_var_int, -1,1)$value #variance of a continuous function, namely the probability distribution of Pearsons on nr points.
+
+PDF <- function(x){dnorm(x, mean=0, sd=sqrt(var1+var2))} #our resulting probability density function (distribution), whenever the secondary distributions are nested within the first distribution, modelled via a Gaussian. 'BLACK' in the graph below.
+
+p <- 2*integrate(PDF, abs(r), Inf)$value #p-value of example r given above.
+
+ggplot()+
+  stat_function(fun=PDF, colour='black', alpha=0.5)+
+  stat_function(fun=primary_dist, colour='red', alpha=0.5)+
+  stat_function(fun=secondary_dist, colour='green', alpha=0.5)+
+  xlim(-.2,.2)+
+  theme_classic()
+
+
+# Input Variables #
+
+rwrout <- NullSampleOut #Example input, this should be the output of our resample with replacement process.
+
+## FUNCTION DEFINITION  ##
+
+adj.p <- function(rwrout, binsize=binsize, iter=iter){
+  
+  #Note, data is already initialised since it is already in the right 'structure'. We therefore only extract information from the data:
+  nEdges <- dim(rwrout$corrs)[1]
+  nSubjects <- dim(rwrout$example)[1]
+
+  pvals <-array(0, c(nEdges, iter, length(binsize)))
+  for(b in 1:length(binsize)){
+      for(i in 1:iter){
+
+#Manual adjusted p-values. We know the exact distribution of random pearson correlations and can find the variance of these. We then sum their variance to obtain an adjusted gaussian null distribution, adj_null.  Then we compute p-values via p=2*P(|t|>T) where T is the resulting null-distribution after resampling with replacement.
+
+n_exact_sd_int <- function(x){x^2*((1-x^2)^((nSubjects-4)/2)/beta(1/2,(nSubjects-2)/2))}
+
+nr_exact_sd_int <- function(x){x^2*((1-x^2)^((binsize[b]-4)/2)/beta(1/2,(binsize[b]-2)/2))}
+
+var1 <- integrate(n_exact_sd_int,-1,1)$value
+
+var2 <- integrate(nr_exact_sd_int,-1,1)$value
+
+adj_null <- function(x){dnorm(x, mean=0, sd=sqrt(var1+var2))} #our resulting probability density function
+r <- 0.1 #a given correlation
+p <- integrate(PDF, abs(r), Inf) #p-value
+
+for (e in 1:nEdges){
+ pvals[e,i,b] <- 2*integrate(adj_null, abs(rwrout$corrs[e,i,b]), Inf)$value #two-tailed p-value.
+}
+
+
+    }
+  }
+  
+  out <- list()
+  
+  out$corrs <- rwrout$corrs
+  out$pvals <-  pvals
+  out$example <- rwrout$example
+    
+  return(out)
+}
+```
+
+```{r Adjusted errors, include=FALSE}
+
+#Resample with replacement with corrected p-values: Null Sample
+NSadjOut <- adj.p(NullSampleOut,binsize,iter) #Null Sample adjusted p-value output
+
+NSadjSE <- statErrors(NSpvals, NScorrs, NSadjOut, thr, mag)
+
+
+NSadjType1 <- type1_figure(NSadjSE)
+NSadjType2 <- type2_figure(NSadjSE)
+NSadjTypeS <- typeS_figure(NSadjSE)
+NSadjTypeM <- typeM_figure(NSadjSE)
+NSadjPower <- power_figure(NSadjSE)
+
+
+```
+
+```{r Subsampling from big null-sample, include=FALSE}
+#We simply generate a much larger original sample and resample from this, up to 10% full sample size:
+
+# Input variable #
+
+nBigSample <- 10000
+
+NullBig<-generate_null(nBigSample,nEdges)
+
+NBcorrs <-sapply(X=2:(nEdges+1), FUN=function(x) cor.test(NullBig[,1], NullBig[,x])$estimate)
+NBpvals <-sapply(X=2:(nEdges+1), FUN=function(x) cor.test(NullBig[,1], NullBig[,x])$p.value)
+
+```
+
+```{r Subsampled errors, include=FALSE}
+
+NullBigOut <- rwr.edgewise.corrs(NullBig,binsize,iter)
+
+NBSE <- statErrors(NBpvals, NBcorrs, NullBigOut, thr, mag)
+
+NBtype1 <- type1_figure(NBSE)
+NBtype2 <- type2_figure(NBSE)
+NBtypeS <- typeS_figure(NBSE)
+NBtypeM <- typeM_figure(NBSE)
+NBpower <- power_figure(NBSE)
+```
+
+The figure below is not included in any text, but neatly summarises bias in statistical power under the null.
+
+```{r Figure X: Correcting biases under null, include=FALSE}
+
+figureX <- ggarrange(NTpower+labs(subtitle='Generated samples (Ground Truth)', x='Generated sample size (log scale)'), 
+                     NSpower+labs(subtitle='Resampling (Marek et al., 2022)'),
+                     NBpower+labs(subtitle='Subsampling (up to 10%)'),
+                     NSadjPower+labs(subtitle='Adjusted p-values'),
+                     nrow = 2, ncol = 2, labels=c('a','b','c','d'))
+
+ggsave('figures/FigureX.png', figureX, device='png', width=20, height=16, units='cm')
+
+```
+
+### Subject level true effects
+
+```{r Copula sample function, include=FALSE}
+
+#Simulating non-Gaussian data through copulas - adapting https://uk.mathworks.com/help/stats/simulating-dependent-random-variables-using-copulas.html 
+
+#The idea of a copula is to use a cumulative distribution function as a map between a uniform distribution and a given distribution. It has been shown that this map conserves covariation [CITE], allowing us to generate uniformly distributed multivariate data with specified covariance through normal or t-distributions. Here we simulate coviariance via a normal distribution, following https://www.r-bloggers.com/2015/10/modelling-dependence-with-copulas-in-r/, and marginal distributions using our previously simulated data.
+
+
+#In order to save time, instead of generating the random data again, we are 'injecting' the true effects into our random sample, replacing the first nTrue edges in a given null-sample with the 'true' copula sample edges.
+
+
+
+#Function Input: Most input is taken from our null-data simulations. #
+
+rho <- 0.2 #Size of underlying true effects
+nTrue <- round(nEdges/100) #Number of true effects simulated. We take the top 1% as 'true' brain-behaviour effects. This means the same edges will be consistently significant across generated datasets!
+
+NullSample #our generated null-data (this will determine the sample size of the distribution with true effects)
+
+
+
+inject_true <- function(rho, nTrue, NullSample){
+
+  nSample <- dim(NullSample)[1] #Number of subjects in our sample
+  nVar <- 1+nTrue #we need to count the behavioural factor as a variable which should covary with our edges.
+  
+#Generating uniform multivariate data from a gaussian distribution
+
+#Scale Matrices generated below:
+
+#Notice these must be positive-definite symmetric matrices, but also having effect sizes in the first row and first column (if our first variable represents behavioural factors). This is most easily achieved by simply letting every off-diagonal be the effect size, although we note that then edges will technically covary with each other, but this will not concern our analysis. In general, we can ignore changes in intercorrelation in our copula sample, as we are only studying the correlation of each edge with some behaviour. We would need to account for this if we were to look at between-edge correlations in network analyses, for example.
+  
+  
+#Initialise covariance matrix  
+covMat <- matrix(rho, nVar, nVar)
+
+#inserting 1s along the diagonals:
+for(i in 1:nVar){
+  covMat[i,i] <-1
+}
+
+#Generating multivariate data, normally distributed:
+z <- MASS::mvrnorm(nSample, mu=rep(0,nVar), Sigma=covMat)
+
+u<- pnorm(z) #Mapping normally distributed data to uniform data.
+
+#hist(u[1]) #Check uniformity is as expected if desired.
+
+#Initialise our copula sample multivariate data:
+copula <- array(0, c(nSample, nVar))
+
+for (v in 1:nVar){
+  invEDF<-sort(NullSample[,v]) #Empirical (cumulative) distribution function from our simulated data. 
+copula[,v] <- invEDF[ceiling(length(invEDF)*u[,v])] #Send data generated through inverse CDF and empirical CDF
+}
+
+colnames(copula) <- colnames(NullSample[,1:nVar]) #Recover column names (factor, e1, e2, ..., e105)
+
+#Finally we collate the covarying data with our random samples so that only a proportion of effects are random.
+
+CopulaSample <- cbind(copula,NullSample[,(nVar+1):(nEdges+1)])
+
+return(CopulaSample)
+}
+```
+
+```{r Generating copula samples, include=FALSE}
+
+# Input #
+
+#True effect sizes we wish to inject:
+rho1 <- 0.2
+rho2 <- 0.4
+nTrue <- nTrue #Number of true effect sizes; this is as above.
+
+CopulaSample1 <- inject_true(rho1, nTrue, NullSample)
+CopulaSample2 <- inject_true(rho2, nTrue, NullSample)
+CopulaBig1 <- inject_true(rho1, nTrue, NullBig)
+CopulaBig2 <- inject_true(rho2, nTrue, NullBig)
+
+#We now also calculate brain-behaviour correlations for our population and sample:
+
+CS1corrs <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(CopulaSample1[,1], CopulaSample1[,x])$estimate)
+  
+CS1pvals <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(CopulaSample1[,1], CopulaSample1[,x])$p.value)
+
+CS2corrs <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(CopulaSample2[,1], CopulaSample2[,x])$estimate)
+  
+CS2pvals <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(CopulaSample2[,1], CopulaSample2[,x])$p.value)
+
+CB1corrs <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(CopulaBig1[,1], CopulaBig1[,x])$estimate)
+  
+CB1pvals <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(CopulaBig1[,1], CopulaBig1[,x])$p.value)
+
+CB2corrs <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(CopulaBig2[,1], CopulaBig2[,x])$estimate)
+  
+CB2pvals <- sapply(X=2:(nEdges+1), FUN=function(x) cor.test(CopulaBig2[,1], CopulaBig2[,x])$p.value)
+
+
+
+```
+
+```{r True effects resampling with replacement, include=FALSE}
+
+#First we perform the iterative resampling with replacement 
+CS1rwr <- rwr.edgewise.corrs(CopulaSample1, binsize, iter)
+CS2rwr <- rwr.edgewise.corrs(CopulaSample2, binsize, iter)
+CB1rwr <- rwr.edgewise.corrs(CopulaBig1, binsize, iter)
+CB2rwr <- rwr.edgewise.corrs(CopulaBig2, binsize, iter)
+
+#Computing errors
+CS1SE <-statErrors(CS1pvals, CS1corrs, CS1rwr, thr, mag)
+CS2SE <- statErrors(CS2pvals, CS2corrs, CS2rwr, thr, mag)
+CB1SE <-statErrors(CB1pvals, CB1corrs, CB1rwr, thr, mag)
+CB2SE <- statErrors(CB2pvals, CB2corrs, CB2rwr, thr, mag)
+
+#Replication rates#
+
+CS1SE$repli <-repli_rate(CopulaSample1, repli_binsize, thr)
+
+CS2SE$repli <- repli_rate(CopulaSample2, repli_binsize, thr)
+
+CB1SE$repli <- repli_rate(CopulaBig1, repli_binsize, thr)
+
+CB2SE$repli <- repli_rate(CopulaBig2, repli_binsize, thr)
+
+
+#data visualisation
+
+```
+
+```{r True effects adjusted rwr, include=FALSE}
+
+#Performing iterative resampling with replacement, now with adjusted p-values.
+adjCS1rwr <- adj.p(CS1rwr,binsize,iter)
+adjCS2rwr <- adj.p(CS2rwr,binsize,iter)
+adjCB1rwr <- adj.p(CB1rwr,binsize,iter)
+adjCB2rwr <- adj.p(CB2rwr,binsize,iter)
+
+adjCS1SE <-statErrors(CS1pvals, CS1corrs, adjCS1rwr, thr, mag)
+adjCS2SE <- statErrors(CS2pvals, CS2corrs, adjCS2rwr, thr, mag)
+adjCB1SE <-statErrors(CB1pvals, CB1corrs, adjCB1rwr, thr, mag)
+adjCB2SE <- statErrors(CB2pvals, CB2corrs, adjCB2rwr, thr, mag)
+
+```
+
+```{r True effect generated samples, include=FALSE}
+#As the null-truth for null-samples, we want to estimate effect sizes by averaging over iterations of generating data. 
+#Instead of generating these iter X nBinsize samples again, we actually only need to replace the first 105 brain-behaviour correlations with correlations obtained from newly generated copulas!
+
+# input variables #
+
+nullgenOut <- null_gen #correlations and pvalues of iteratively generated datasets.
+rho <- rho1 
+
+regen_true <- function(nullgenOut, rho, nEdges){
+#Initialise matrices
+  for (i in 1:iter){
+  for (b in 1:length(binsize)){
+
+    data <- generate_null(binsize[b],nEdges)
+    data <- inject_true(rho, nTrue, data)    
+ 
+    temp_Pearson <- sapply(X=2:(nEdges+1), FUN=function(X) cor.test(data[,1], data[,X])[3:4]) #Performing correlations list-wise and outputting a string with pvalues [3] and estimates [4], which is 2*nEdges long, with pvalues on odd rows and correlations on even rows:
+    
+     pvals <- sapply(X=1:(nEdges), FUN=function(X) as.numeric(temp_Pearson[2*X-1])) 
+    
+     corrs <- sapply(X=1:(nEdges), FUN=function(X) as.numeric(temp_Pearson[2*X]))  
+    
+nullgenOut$corrs[,i,b] <- corrs
+nullgenOut$pvals[,i,b] <- pvals
+
+
+    }
+  }
+  return(nullgenOut)
+}
+
+CS1regen <- regen_true(nullgenOut, rho1, nEdges)
+CS2regen <- regen_true(nullgenOut, rho2, nEdges)
+
+CT1SE<- statErrors(CS1pvals, CS1corrs, CS1regen, thr, mag) #Calculating stat errors. Using Copula Sample 1 as our discovery sample.
+CT2SE<- statErrors(CS2pvals, CS2corrs, CS2regen, thr, mag) #Calculating stat errors. Using Copula Sample 2 as our discovery sample.
+```
+
+```{r Supplementary figure 4: Visualising copula samples, include=FALSE}
+
+##Supplementary? figure of scattered effect
+cs1_scatter <- CopulaSample1 %>% as.tibble() %>% select(factor, e1) %>%
+  ggplot( aes(y=factor, x=e1)) +
+  geom_point(colour=4, alpha=0.3) +
+  geom_smooth(method=lm, colour="black", se=FALSE)+
+  labs(title="Copula Sample (\U03C1 = 0.2), N=1,000", x="Edge 1 connectivity", y="Behavioural factor")+
+  stat_cor(method="pearson")+
+  xlim(-1,1)+
+  theme_classic()
+
+cs1_edgeHist <- CopulaSample1 %>% as.tibble() %>% select(e1) %>%
+  ggplot(aes(x=e1)) +
+  geom_histogram(binwidth = 0.1, colour="black", fill=4, alpha=0.5) +
+  xlim(-1,1) +
+  ylim(0,170)+
+  labs(subtitle="Copula Sample (\U03C1 = 0.2), N=1,000", x="Edge 1 connectivity", y="Frequency")+
+  theme_classic()
+
+cs1_corrsHist <- CS1corrs %>% as.tibble() %>%
+  ggplot(aes(x=value))+
+  geom_histogram(binwidth=0.005, colour="black", fill=4, alpha=0.5)+
+  xlim(-.3,.3)+
+  ylim(0,100)+
+  labs(subtitle="Copula sample (\U03C1 = 0.2), 1,225 correlations (Pearson)", x='brain-behaviour correlation', y='Frequency')+
+  theme_classic()
+
+
+SupFig4<-ggarrange(ggarrange(cs1_scatter, cs1_edgeHist, labels=c('a','b')), cs1_corrsHist, nrow=2, labels=c('','c')) #Visualising effect sizes in scatter plots
+
+ggsave('figures/SupFig4.png', 
+       (SupFig4), bg='transparent',  width = 20, height = 16, dpi = 900, units = "cm", device='png')
+
+
+# Similarly for rho = 0.4 
+
+cs2_scatter <- CopulaSample2 %>% as.tibble() %>% select(factor, e1) %>%
+  ggplot( aes(y=factor, x=e1)) +
+  geom_point(colour=4, alpha=0.3) +
+  geom_smooth(method=lm, colour="black", se=FALSE)+
+  labs(title="Copula Sample (\U03C1 = 0.4), N=1,000", x="Edge 1 connectivity", y="Behavioural factor")+
+  stat_cor(method="pearson")+
+  xlim(-1,1)+
+  theme_classic()
+
+cs2_edgeHist <- CopulaSample1 %>% as.tibble() %>% select(e1) %>%
+  ggplot(aes(x=e1)) +
+  geom_histogram(binwidth = 0.1, colour="black", fill=4, alpha=0.5) +
+  xlim(-1,1) +
+  ylim(0,170)+
+  labs(subtitle="Copula Sample (\U03C1 = 0.4), N=1,000", x="Edge 1 connectivity", y="Frequency")+
+  theme_classic()
+
+
+```
+
+```{r Supplementary Figure 5: Estimates of power under weak effects, include=FALSE}
+SupFig5 <- ggarrange(
+power_figure(CT1SE)+labs(subtitle='Generated samples (Ground Truth)', x='Generated sample size (log scale)')+geom_hline(yintercept=0.8,linetype='dotted')+geom_vline(xintercept = 525, linetype = "dashed")+theme(legend.position=c(0.17,0.80)) ,
+power_figure(CS1SE)+labs(subtitle='Resampling (Marek et al., 2022)')+geom_hline(yintercept=0.8,linetype='dotted')+geom_vline(xintercept = 525, linetype = "dashed")+theme(legend.position=c(0.17,0.80)),
+power_figure(CB1SE)+labs(subtitle='Subsampling (up to 10%)')+geom_hline(yintercept=0.8,linetype='dotted')+geom_vline(xintercept = 525, linetype = "dashed")+theme(legend.position=c(0.17,0.80)),
+power_figure(adjCS1SE)+labs(subtitle='Adjusted p-values')+geom_hline(yintercept=0.8,linetype='dotted')+geom_vline(xintercept = 525, linetype = "dashed")+theme(legend.position=c(0.17,0.80)),
+labels = 'auto', ncol=2, nrow=2
+)
+
+ggsave('figures/SupFig5.png', SupFig5, device='png', width=20, height=16, units='cm')
+```
+
+```{r Supplementary Figure 6: Estimates of power under moderate effects, include=FALSE}
+
+SupFig6 <- ggarrange(
+power_figure(CT2SE)+labs(subtitle='Generated samples (Ground Truth)', x='Generated sample size (log scale)') +geom_hline(yintercept=0.8,linetype='dotted')+geom_vline(xintercept = 200, linetype = "dashed")+theme(legend.position=c(0.17,0.80)),
+power_figure(CS2SE)+labs(subtitle='Resampling (Marek et al., 2022)')+geom_hline(yintercept=0.8,linetype='dotted')+geom_vline(xintercept = 200, linetype = "dashed")+theme(legend.position=c(0.17,0.80)),
+power_figure(CB2SE)+labs(subtitle='Subsampling (up to 10%)')+geom_hline(yintercept=0.8,linetype='dotted')+geom_vline(xintercept = 200, linetype = "dashed")+theme(legend.position=c(0.17,0.80)),
+power_figure(adjCS2SE)+labs(subtitle='Adjusted p-values')+geom_hline(yintercept=0.8,linetype='dotted')+geom_vline(xintercept = 200, linetype = "dashed")+theme(legend.position=c(0.17,0.80)),
+labels = 'auto', ncol=2, nrow=2
+)
+
+ggsave('figures/SupFig6.png', SupFig6, device='png', width=20, height=16, units='cm')
+```
+
+### Other figure
+
+The figure below is not included in any texts, however serves as a demonstration. 
+Panels a and b compare the correlation of brain measure to behavioural factor in the original sample to the resample. Notice at this stage, that points are duplicated (this is a red herring, or proxy at best). Comparing panels c and d demonstrates that the marginal distribution of edge connectivity is preserved by the resample. This is as described in bootstrapping literature. However, the distribution of resulting brain-wide associations is not preserved (as shown in main text Figure 2).
+
+```{r Suplementary figure ?: Visualising resampling at edge-behaviour level, include=FALSE}
+#We compare an original sample to a resample with replacement (up to full sample size); here we scatter a single edge against behavioural factors
+
+os_scatter <- NullSample %>% as.tibble() %>% dplyr::select(factor, e1) %>%
+  ggplot(aes(x=e1, y=factor)) +
+  geom_point(colour=4, alpha=0.3) +
+  geom_smooth(method=lm, colour="black", se=FALSE)+
+  labs(title="Original Sample, N=1,000", x="Edge 1 connectivity", y="Behavioural factor")+
+  stat_cor(method="pearson")+
+  xlim(-1,1)+
+  ylim(-10,50)+
+  theme_classic()
+
+rs_scatter <- NullSampleOut$example %>% as.tibble() %>% dplyr::select(factor, e1) %>%
+  ggplot( aes(x=e1, y=factor)) +
+  geom_point(colour=4, alpha=0.3) +
+  geom_smooth(method=lm, colour="black", se=FALSE)+
+  labs(title="Resample, N=1,000", x="Edge 1 connectivity", y="Behavioural factor")+
+  stat_cor(method="pearson")+
+  xlim(-1,1)+
+  ylim(-10,50)+
+  theme_classic()
+  
+
+os_edgeHist  <- NullSample %>% as.tibble() %>% dplyr::select(e1) %>%
+  ggplot(aes(x=e1)) +
+  geom_histogram(binwidth = 0.1, colour="black", fill=4, alpha=0.5) +
+  xlim(-1,1) +
+  ylim(0,170)+
+  labs(subtitle="Original Sample, N=1,000", x="Edge 1 connectivity", y="Frequency")+
+  theme_classic()
+
+rs_edgeHist  <- NullSampleOut$example %>% as.tibble() %>% dplyr::select(e1) %>%
+  ggplot(aes(x=e1)) +
+  geom_histogram(binwidth = 0.1, colour="black", fill=4, alpha=0.5) +
+  xlim(-1,1) +
+  ylim(0,170)+
+  labs(subtitle="Resample, N=1,000", x="Edge 1 connectivity", y="Frequency")+
+  theme_classic()
+
+
+resamplingFigure<-ggarrange(os_scatter, rs_scatter, os_edgeHist, rs_edgeHist, nrow=2, ncol=2, labels=c('a','b', 'c', 'd'), heights=c(5,3))
+
+resamplingFigure
+```
