@@ -25,7 +25,14 @@ https://gitlab.com/DosenbachGreene/bwas
 
  ## R ##
 
-Data generation, resampling, true effect simulations, et.c. have been coded in R in a single R markdown file.
+Analyses have been coded in separate R markdown files. 
+
+1) "subject_level.Rmd"" (Figures 1, 2 and Supplementary figures)
+
+2) "correlation_level.Rmd" (Figure 3)
+
+3) "Fig2SrcSim.Rmd" (Supplementary Figure 1)
+
 We recommend navigating through the Chunks, as these have been separated for different tasks, such as generating data, resampling with replacement, arranging plots, et.c.
 
 The workflow in R was enabled thanks to the following packages:
