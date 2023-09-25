@@ -1,10 +1,10 @@
 ## README ##
 
-Biased Statistical Error estimates under resampling with replacement.
+Biased statistical error estimates when resampling with replacement.
 
 Thanks for reading this!
 
-Here's a short overview over the files in the OSF repository.
+Here's a short overview over the files in this repository.
 
 MATLAB is a folder containing matlab code used for exploratory tests of Marek et al.'s (2022) code. This work would not have been possible without the availability of their code, for which we are grateful.
 The project was since moved to the R environment for open-source reproducibility and figures have been included for reproducibility purposes as well.
