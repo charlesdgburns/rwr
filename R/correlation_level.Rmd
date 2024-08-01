@@ -37,7 +37,7 @@ As a final figure for these simulations, we want a graph for each statistical er
 nDiscovery <- 1000; #sample size of our simulated data.
 binsize <- c(25,33,50, 70, 100,135, 200, 265, 375, 525, 725, 1000); #resample size bins
 iter <- 100 #Number of iterations
-nEffects <- 55278 #100 choose 2; more effects leads to smoother bias estimations
+nEffects <- 55278 #333 choose 2; more effects leads to smoother bias estimations
 threshold <- 0.05/nEffects #significance threshold, fixed here as power varies
 power <- c(0.01,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,0.99)
 
@@ -51,12 +51,13 @@ We find critical effect sizes for a discovery sample of n = 1000, at a bonferron
 rCrit <- c() #Initiating vector
 
 for(p in 1:length(power)){
-  Zb <- qnorm(power[p]) #Critical Z score for a given power
-    Za <- qnorm(1-threshold/2) #Critical Z score for a given threshold
+  Zb <- qnorm(1-power[p]) #Critical Z score for a given power
+    Za <- qnorm(threshold/2) #Critical Z score for a given threshold
         z <- (Zb+Za)/sqrt(nDiscovery-3) #Power scaled to the distribution at full sample size
         rCrit[p] <- tanh(z) #Fisher transformation from Z dist to Pearson Correlation Dist.
   }
 
+rCrit <- abs(rCrit) #make all effect sizes positive
 ```
 
 The above effect sizes will be used to simulate true effects of a given power level (at n=1000, alpha bonferonni corrected). 
@@ -157,7 +158,7 @@ Resample$pvals <- pvals
 
 ```
 
-Now we can compute the bias in statistical power. We first estimate power as in Marek et al., averaging over the 1000 iterations, and then compare this to expected power.
+Now we can compute the bias in statistical power. We first estimate power as in Marek et al., averaging over the 100 iterations, and then compare this to expected power.
 
 ```{r Estimated Power}
 
@@ -179,7 +180,7 @@ estimatedPower[b,a] <- 1-sum(Resample$pvals[sigidx, ,b,a]>=threshold)/(iter*sum(
 ```
 
 
-```{r Power Figure}
+```{r Estimated Figure}
 colnames(estimatedPower) <- power
 
 wrangle <- estimatedPower %>%
@@ -192,21 +193,70 @@ wrangle <- estimatedPower %>%
 palette <- RColorBrewer::brewer.pal(11, "RdYlBu")
 
 
-  PowerFigure <- wrangle %>% ggplot() + 
+  EstimatedFigure <- wrangle %>% ggplot() + 
   geom_line(aes(x=resize, y=estimated, colour=expected) ) + 
   theme_minimal() + 
-  scale_y_continuous(limits=c(0,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'))+ 
+  scale_y_continuous(limits=c(-0.1,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), 
+                   labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'),
+                   sec.axis = dup_axis(name = ''))+ 
   scale_x_continuous(breaks=binsize, trans='log10') + 
     scale_fill_discrete(labels=threshold) + 
-    labs(subtitle='Estimate (Marek, Tervo-Clemmens et al.)',y='Statistical Power', x='Sample Size', colour='\U003B1') +
+    labs(subtitle='Estimated (Marek, Tervo-Clemmens et al.)',y='Statistical Power', x='Sample Size', colour='\U003B1') +
     scale_colour_manual(values=palette, labels=c("0.01"," "," "," "," "," "," "," "," ","0.99"))+ 
     guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="Discovery Power"))+
     theme(legend.position=c(0.2,0.35))
   
-  PowerFigure
+ EstimatedFigure
 ```
 
-While the above figure is useful for a reference
+
+```{r Expected figure}
+
+#We perform power calculations for the true effect sizes across sample size (all bonferonni corrected)
+
+analyticPower <- array(0,c(length(binsize),length(power)))
+
+for(a in 1:length(power)){
+  z <- atanh(rCrit[a]) #fisher transformation of effect size.
+    Za <- qnorm(1-threshold/2) #Critical Z score for bonferroni corrected threhshold
+      for(b in 1:length(binsize)){
+        n <- binsize[b]
+        Zb <- sqrt(n-3)*z-Za      
+        analyticPower[b,a] <- pnorm(Zb)
+  }
+}
+
+colnames(analyticPower) <- power
+
+analyticWrangle <- analyticPower %>%
+    as.tibble() 
+
+analyticWrangle <- analyticWrangle %>%
+#tibble for ggplot 
+    pivot_longer(cols = colnames(analyticPower), names_to = 'expected', values_to='analytic') %>% #allows grouping by significance thresholds
+    mutate(resize = rep(binsize[1:12], each=length(power)), expected=factor(expected, levels=power)) %>% #Add a column for resample size bins (our x-axis)
+    group_by(expected) #group_by for distinct lines.
+  
+
+palette <- RColorBrewer::brewer.pal(11, "RdYlBu")
+
+
+ExpectedFigure <- analyticWrangle %>% 
+    ggplot() + 
+      geom_line(aes(x=resize, y=analytic, colour=expected) ) + 
+      theme_minimal() + 
+      scale_y_continuous(limits=c(-0.1,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), 
+                   labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'),
+                   sec.axis = dup_axis(name = ''))+ 
+      scale_x_continuous(breaks=binsize, trans='log10') +
+      scale_fill_discrete(labels=threshold) + labs(subtitle='Expected (analytical)', y='Statistical Power', x='Sample Size', colour='\U003B1') +
+    scale_colour_manual(values=palette, labels=c("0.01"," "," "," "," "," "," "," "," ","0.99"))+ 
+    guides(colour = guide_coloursteps(even.steps=TRUE, show.limits=FALSE,direction= 'horizontal',reverse=0, barheight = unit(0.3, "cm"), barwidth=unit(2.1,"cm"),label.position='top', title.position="top", title="Discovery Power"))+
+      theme(legend.position=c(0.2,0.35))
+  
+ExpectedFigure
+```
+
 
 ```{r Bias figure}
 
@@ -243,7 +293,9 @@ palette <- RColorBrewer::brewer.pal(11, "RdYlBu")
     ggplot() + 
       geom_line(aes(x=resize, y=estimated, colour=expected) ) + 
       theme_minimal() + 
-      scale_y_continuous(limits=c(-0.1,0.7), n.breaks=8)+
+    scale_y_continuous(limits=c(-0.1,1),breaks=c(0,0.1,0.2, 0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.9,1), 
+                       labels=c('0%','10%','20%','30%','40%','50%', '60%', '70%', '80%','90%','100%'),
+                       sec.axis = dup_axis(name = ''))+ 
       scale_x_continuous(breaks=binsize, trans='log10') +
       scale_fill_discrete(labels=threshold) + labs(subtitle='Bias (estimated - expected)', y='Statistical Power', x='Sample Size', colour='\U003B1') +
     scale_colour_manual(values=palette, labels=c("0.01"," "," "," "," "," "," "," "," ","0.99"))+ 
@@ -256,10 +308,10 @@ BiasFigure
 
 ```{r Figure}
 
-Figure3 <- ggarrange(DiscoveryPlot, PowerFigure, BiasFigure,nrow = 1, labels=c("a","b","c"))
+Figure3 <- ggarrange(DiscoveryPlot, ExpectedFigure, EstimatedFigure, BiasFigure,nrow = 2, ncol=2, labels=c("a","b","c","d"))
 
 ggsave('figures/Figure3.png',
- (Figure3),bg='transparent',  width = 32, height = 8, dpi = 900, units = "cm", device='png')
+ (Figure3),bg='transparent',  width = 32, height = 16, dpi = 900, units = "cm", device='png')
 
 Figure3
 ```

@@ -624,7 +624,7 @@ NSpower <- power_figure(NullSampleSE)+labs(subtitle=('Statistical Power'))
 
 figure1<-ggarrange(NStype2, NStypeM, NStypeS, NSpower, NSrepli, NStype1,  nrow=2, ncol=3, labels=c('a','b','c','d', 'e', 'f'))
 
-ggsave('figures/Figure1.png', 
+ggsave('figures/Figure1WithoutReplacement.png', 
        (figure1),bg='transparent',  width = 32, height = 16, dpi = 900, units = "cm", device='png')
 ```
 
