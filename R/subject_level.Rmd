@@ -608,7 +608,7 @@ power_figure <- function(dataSE){
 
 ```
 
-```{r Figure 1: Estimated statistical errors and reproducibility of random noise, include = FALSE}
+```{r Figure 2: Estimated statistical errors and reproducibility of random noise, include = FALSE}
 ### Graphs ###
 NStype1 <- type1_figure(NullSampleSE)
 
@@ -651,7 +651,7 @@ ggsave('figures/ExtData.png',
 
 ### Explaining the bias - "relative sampling variability"
 
-```{r Figure 2: Relative sampling variability}
+```{r Figure 3: Relative sampling variability}
 ##Note that for the figure in preprint, annotations and distribution over iterations are combined.
 
 
@@ -660,7 +660,7 @@ ggsave('figures/ExtData.png',
 os_corrsHist  <- NScorrs %>% as.tibble() %>%
   ggplot(aes(x=value)) +
   geom_histogram(colour="black", fill=4, alpha=0.5, binwidth=0.01) +
-  labs(subtitle="Original Sample, 1,225 correlations (Pearson)", x="brain-behaviour correlation", y="Frequency")+
+  labs(subtitle="Large Sample, 1,225 correlations (Pearson)", x="brain-behaviour correlation", y="Frequency")+
    coord_cartesian(xlim = c(-0.15,0.15), ylim=c(0,170))+
   stat_function(fun = function(x) dnorm(x, mean = 0, sd = 0.0316386) * 12.25)+ #Parametric gaussian from null-distribution of Pearson correlations
   theme_classic()
@@ -671,7 +671,7 @@ os_pvalHist  <-NSpvals %>% as.tibble() %>%
   ggplot(aes(x=value)) +
   geom_histogram(binwidth = 0.01, colour="black", fill=4, alpha=0.5, size=0.2) +
   coord_cartesian(xlim = c(0,1), ylim=c(0,70))+
-  labs(subtitle="Original sample, 1,225 correlations (Pearson)", x="brain-behaviour P value", y="Frequency")+
+  labs(subtitle="Large sample, 1,225 correlations (Pearson)", x="brain-behaviour P value", y="Frequency")+
   theme_classic()
 
 
@@ -696,10 +696,10 @@ rs_pvalHist <-NullSampleOut$pvals[,iter,length(binsize)] %>% as.tibble() %>%
   theme_classic()
 
 
-Figure2 <- ggarrange(os_corrsHist, os_pvalHist,  rs_corrsHist,  rs_pvalHist, nrow=2, ncol=2, heights=c(4,4), labels=c('a','b','c','d'))
+Figure3 <- ggarrange(os_corrsHist, os_pvalHist,  rs_corrsHist,  rs_pvalHist, nrow=2, ncol=2, heights=c(4,4), labels=c('a','b','c','d'))
 
-ggsave('figures/Figure2.png', 
-       (Figure2),bg='transparent',  width = 20, height = 16, dpi = 900, units = "cm", device='png')
+ggsave('figures/Figure3.png', 
+       (Figure3),bg='transparent',  width = 20, height = 16, dpi = 900, units = "cm", device='png')
 # Distribution of an example (max in original sample) brain-behaviour correlation across iterations in the resample#
 
 max<-which(NScorrs==max(NScorrs))
@@ -714,7 +714,7 @@ NSedgeIterHist <- NullSampleOut$corrs[max, ,length(binsize)] %>% as.tibble() %>%
   coord_cartesian(xlim = c(-0.2,0.2), ylim=c(0,20))+
   theme_classic()
 
-ggsave('figures/Figure2e.png', (NSedgeIterHist), bg='transparent', width=7, height=7, dpi=900, units='cm', device='png')
+ggsave('figures/Figure3e.png', (NSedgeIterHist), bg='transparent', width=7, height=7, dpi=900, units='cm', device='png')
 
 ```
 
