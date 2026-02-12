@@ -1,7 +1,11 @@
 ## README ##
 
 Biased statistical error estimates when resampling with replacement.
-PREPRINT: https://www.biorxiv.org/content/10.1101/2023.09.21.558661v1
+
+Publication: [https://www.nature.com/articles/s41598-025-89257-w](https://www.nature.com/articles/s41598-025-89257-w)
+
+<img width="2008" height="1135" alt="image" src="https://github.com/user-attachments/assets/3b332b3c-d7f7-4282-b177-298695c1b283" />
+
 
 Thanks for reading this!
 
